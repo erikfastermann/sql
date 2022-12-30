@@ -1,12 +1,37 @@
 package main
 
 import (
-	"context"
 	"net"
+	"time"
 )
 
+type timeoutConn struct {
+	c       net.Conn
+	timeout time.Duration
+}
+
+func (c *timeoutConn) Write(p []byte) (n int, err error) {
+	deadline := time.Now().Add(timeout)
+	if err := c.c.SetWriteDeadline(deadline); err != nil {
+		return 0, err
+	}
+	return c.c.Write(p)
+}
+
+func (c *timeoutConn) Read(p []byte) (n int, err error) {
+	deadline := time.Now().Add(timeout)
+	if err := c.c.SetReadDeadline(deadline); err != nil {
+		return 0, err
+	}
+	return c.c.Read(p)
+}
+
+func (c *timeoutConn) Close() error {
+	return c.c.Close()
+}
+
 type conn struct {
-	c net.Conn // TODO: timeouts
+	c *timeoutConn
 	r *reader
 	b builder
 
@@ -18,17 +43,19 @@ type conn struct {
 }
 
 func connect() (*conn, error) {
-	dialer := &net.Dialer{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cc, err := dialer.DialContext(ctx, "tcp", postgresAddr)
+	cc, err := net.DialTimeout("tcp", postgresAddr, timeout)
 	if err != nil {
 		return nil, err
 	}
+	withTimeout := &timeoutConn{
+		c:       cc,
+		timeout: timeout,
+	}
+
 	parameterStatuses := make(map[string]string)
 	c := &conn{
-		c:                 cc,
-		r:                 newReader(cc, parameterStatuses),
+		c:                 withTimeout,
+		r:                 newReader(withTimeout, parameterStatuses),
 		parameterStatuses: parameterStatuses,
 	}
 	return c, nil
