@@ -7,89 +7,85 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 )
-
-// TODO: handle 55.2.7. Asynchronous Operations
 
 type reader struct {
 	r *bufio.Reader
 
-	// reference the buffer of r
+	// b and orig reference the buffer of r
+
 	b              []byte
 	originalBuffer []byte
+
+	parameterStatuses map[string]string
 }
 
 const readBufferSize = 4096 * 2 * 10
 
-func newReader(r io.Reader) *reader {
-	return &reader{r: bufio.NewReaderSize(r, readBufferSize)}
+func newReader(r io.Reader, parameterStatuses map[string]string) *reader {
+	return &reader{
+		r:                 bufio.NewReaderSize(r, readBufferSize),
+		parameterStatuses: parameterStatuses,
+	}
 }
 
 func (r *reader) readMessage() error {
-	if _, err := r.r.Discard(len(r.originalBuffer)); err != nil {
-		panic(err)
-	}
+	for {
+		if _, err := r.r.Discard(len(r.originalBuffer)); err != nil {
+			panic(err)
+		}
 
-	header, err := r.r.Peek(5)
-	if err != nil {
-		return fmt.Errorf("unable to read next message header: %w", err)
-	}
-	length := binary.BigEndian.Uint32(header[1:])
-	n, err := safeConvert[int64, int](int64(length) + 1)
-	if err != nil {
-		return err
-	}
+		header, err := r.r.Peek(5)
+		if err != nil {
+			return fmt.Errorf("unable to read next message header: %w", err)
+		}
+		kind := header[0]
+		length := binary.BigEndian.Uint32(header[1:])
+		n, err := safeConvert[int64, int](int64(length) + 1)
+		if err != nil {
+			return err
+		}
 
-	b, err := r.r.Peek(n)
-	if err != nil {
-		return err
-	}
-	r.b = b
-	r.originalBuffer = b
+		b, err := r.r.Peek(n)
+		if err != nil {
+			return err
+		}
+		r.b = b
+		r.originalBuffer = b
 
-	errPq := r.newError()
-	if errPq == nil {
-		r.resetToOriginal()
-		return nil
-	}
-	return errPq
-}
-
-func (r *reader) newError() error {
-	if err := r.expectKind('E'); err != nil {
-		if unexpectedKind := (*errorUnexpectedKind)(nil); errors.As(err, &unexpectedKind) {
+		switch kind {
+		case 'E':
+			errPq, err := r.errorResponse()
+			if err != nil {
+				return err
+			}
+			return errPq
+		case 'S':
+			if length == 4 {
+				// PortalSuspended
+				return nil
+			} else {
+				parameter, status, err := r.parameterStatus()
+				if err != nil {
+					return err
+				}
+				r.parameterStatuses[string(parameter)] = string(status)
+				continue
+			}
+		case 'N':
+			n, err := r.noticeReponse()
+			if err != nil {
+				return err
+			}
+			log.Printf("%s", n)
+			continue
+		case 'A':
+			return errors.New("NotificationResponse not implemented")
+		default:
 			return nil
 		}
-		return r.newErrorParseFailed(err)
 	}
-
-	if _, err := r.readInt32(); err != nil {
-		return r.newErrorParseFailed(err)
-	}
-
-	var errPq errorPostgres
-	for {
-		typ, err := r.readByte()
-		if err != nil {
-			return r.newErrorParseFailed(err)
-		}
-		if typ == 0 {
-			return &errPq
-		}
-		value, err := r.readString()
-		if err != nil {
-			return r.newErrorParseFailed(err)
-		}
-		errPq.assignField(typ, string(value))
-	}
-}
-
-func (r *reader) newErrorParseFailed(err error) error {
-	return fmt.Errorf("%w (%q)", err, r.originalBuffer)
-}
-
-func (r *reader) resetToOriginal() {
-	r.b = r.originalBuffer
 }
 
 func (r *reader) expectKind(expected byte) error {
@@ -168,9 +164,52 @@ func (r *reader) authenticationOk() error {
 		return err
 	}
 	if authCode != 0 {
-		return fmt.Errorf("authentication method %d failed: not implemented", authCode)
+		return fmt.Errorf("not implemented authentication method %d requested", authCode)
 	}
 	return nil
+}
+
+func (r *reader) errorAndNoticeResponse(out *errorAndNoticeFields) error {
+	if _, err := r.readInt32(); err != nil {
+		return err
+	}
+
+	for {
+		typ, err := r.readByte()
+		if err != nil {
+			return err
+		}
+		if typ == 0 {
+			return nil
+		}
+		value, err := r.readString()
+		if err != nil {
+			return err
+		}
+		out.assignField(typ, string(value))
+	}
+}
+
+func (r *reader) errorResponse() (*postgresError, error) {
+	if err := r.expectKind('E'); err != nil {
+		return nil, err
+	}
+	var errPq postgresError
+	if err := r.errorAndNoticeResponse(&errPq.errorAndNoticeFields); err != nil {
+		return nil, err
+	}
+	return &errPq, nil
+}
+
+func (r *reader) noticeReponse() (*notice, error) {
+	if err := r.expectKind('N'); err != nil {
+		return nil, err
+	}
+	var n notice
+	if err := r.errorAndNoticeResponse(&n.errorAndNoticeFields); err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 func (r *reader) parameterStatus() (parameter []byte, value []byte, err error) {

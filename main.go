@@ -32,6 +32,13 @@ func run() error {
 	}
 	defer c.Close()
 
+	if err := runConn(c); err != nil {
+		return fmt.Errorf("%w (%q)", err, c.r.originalBuffer)
+	}
+	return nil
+}
+
+func runConn(c *conn) error {
 	if err := c.startup(); err != nil {
 		return err
 	}

@@ -1,9 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"strings"
+)
 
 // See https://www.postgresql.org/docs/current/protocol-error-fields.html
-type errorPostgres struct {
+type errorAndNoticeFields struct {
 	severityLocalized string
 	severity          string
 	sqlstateCode      string
@@ -26,7 +28,7 @@ type errorPostgres struct {
 	additional map[byte]string
 }
 
-func (e *errorPostgres) assignField(typ byte, value string) {
+func (e *errorAndNoticeFields) assignField(typ byte, value string) {
 	switch typ {
 	case 'S':
 		e.severityLocalized = value
@@ -72,6 +74,55 @@ func (e *errorPostgres) assignField(typ byte, value string) {
 	}
 }
 
-func (e *errorPostgres) Error() string {
-	return fmt.Sprintf("%s: %s", e.severity, e.message)
+func (e *errorAndNoticeFields) String() string {
+	fieldMapping := [...]struct {
+		name  string
+		value string
+	}{
+		{"Localized Severity", e.severityLocalized},
+		{"Severity", e.severity},
+		{"SQL State Code", e.sqlstateCode},
+		{"Message", e.message},
+		{"MessageDetailed", e.messageDetailed},
+		{"Hint", e.hint},
+		{"Position", e.position},
+		{"Internal Position", e.positionInternal},
+		{"Internal Query", e.queryInternal},
+		{"Where", e.where},
+		{"Schema Name", e.schemaName},
+		{"Table Name", e.tableName},
+		{"Column Name", e.columnName},
+		{"Type Name", e.typeName},
+		{"Constraint Name", e.constraintName},
+		{"File", e.file},
+		{"Line", e.line},
+		{"Routine", e.routine},
+	}
+
+	var b strings.Builder
+	commaNeeded := false
+	for _, f := range fieldMapping {
+		if f.value != "" {
+			if commaNeeded {
+				b.WriteString(", ")
+			}
+			b.WriteString(f.name)
+			b.WriteString(": ")
+			b.WriteString(f.value)
+			commaNeeded = true
+		}
+	}
+	return b.String()
+}
+
+type postgresError struct {
+	errorAndNoticeFields
+}
+
+func (e *postgresError) Error() string {
+	return e.String()
+}
+
+type notice struct {
+	errorAndNoticeFields
 }

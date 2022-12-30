@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 )
 
@@ -15,6 +13,8 @@ type conn struct {
 	processId, secretKey int
 
 	txStatus byte
+
+	parameterStatuses map[string]string
 }
 
 func connect() (*conn, error) {
@@ -25,17 +25,24 @@ func connect() (*conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	parameterStatuses := make(map[string]string)
 	c := &conn{
-		c: cc,
-		r: newReader(cc),
+		c:                 cc,
+		r:                 newReader(cc, parameterStatuses),
+		parameterStatuses: parameterStatuses,
 	}
 	return c, nil
+}
+
+func (c *conn) writeMessage() error {
+	_, err := c.c.Write(c.b.b)
+	return err
 }
 
 func (c *conn) Close() error {
 	c.b.reset()
 	c.b.terminate()
-	if _, err := c.c.Write(c.b.b); err != nil {
+	if err := c.writeMessage(); err != nil {
 		return err
 	}
 	return c.c.Close()
@@ -46,7 +53,7 @@ func (c *conn) startup() error {
 	if err := c.b.startup(); err != nil {
 		return err
 	}
-	if _, err := c.c.Write(c.b.b); err != nil {
+	if err := c.writeMessage(); err != nil {
 		return err
 	}
 	if err := c.r.readMessage(); err != nil {
@@ -56,21 +63,9 @@ func (c *conn) startup() error {
 		return err
 	}
 
-	for {
-		if err := c.r.readMessage(); err != nil {
-			return err
-		}
-		parameter, value, err := c.r.parameterStatus()
-		if err != nil {
-			if unexpectedKind := (*errorUnexpectedKind)(nil); errors.As(err, &unexpectedKind) {
-				break
-			}
-			return err
-		}
-		fmt.Printf("%q: %q\n", parameter, value) // TODO
+	if err := c.r.readMessage(); err != nil {
+		return err
 	}
-
-	c.r.resetToOriginal()
 	processId, secretKey, err := c.r.backendKeyData()
 	if err != nil {
 		return err
@@ -104,7 +99,7 @@ func (c *conn) getQueryMetadata(preparedStatement, query string) (*metadata, err
 		return nil, err
 	}
 	c.b.sync()
-	if _, err := c.c.Write(c.b.b); err != nil {
+	if err := c.writeMessage(); err != nil {
 		return nil, err
 	}
 
