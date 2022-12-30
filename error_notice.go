@@ -4,6 +4,11 @@ import (
 	"strings"
 )
 
+type additionalErrorAndNoticeField struct {
+	identifier byte
+	value      string
+}
+
 // See https://www.postgresql.org/docs/current/protocol-error-fields.html
 type errorAndNoticeFields struct {
 	severityLocalized string
@@ -25,7 +30,7 @@ type errorAndNoticeFields struct {
 	line              string
 	routine           string
 
-	additional map[byte]string
+	additional []additionalErrorAndNoticeField
 }
 
 func (e *errorAndNoticeFields) assignField(typ byte, value string) {
@@ -67,10 +72,10 @@ func (e *errorAndNoticeFields) assignField(typ byte, value string) {
 	case 'R':
 		e.routine = value
 	default:
-		if e.additional == nil {
-			e.additional = make(map[byte]string)
-		}
-		e.additional[typ] = value
+		e.additional = append(e.additional, additionalErrorAndNoticeField{
+			identifier: typ,
+			value:      value,
+		})
 	}
 }
 
@@ -101,6 +106,7 @@ func (e *errorAndNoticeFields) String() string {
 
 	var b strings.Builder
 	commaNeeded := false
+
 	for _, f := range fieldMapping {
 		if f.value != "" {
 			if commaNeeded {
@@ -112,6 +118,17 @@ func (e *errorAndNoticeFields) String() string {
 			commaNeeded = true
 		}
 	}
+
+	for _, f := range e.additional {
+		if commaNeeded {
+			b.WriteString(", ")
+		}
+		b.WriteByte(f.identifier)
+		b.WriteString(": ")
+		b.WriteString(f.value)
+		commaNeeded = true
+	}
+
 	return b.String()
 }
 

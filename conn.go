@@ -75,6 +75,18 @@ func (c *conn) Close() error {
 	return c.c.Close()
 }
 
+func (c *conn) readyForQuery() error {
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	txStatus, err := c.r.readyForQuery()
+	if err != nil {
+		return err
+	}
+	c.txStatus = txStatus
+	return nil
+}
+
 func (c *conn) startup() error {
 	c.b.reset()
 	if err := c.b.startup(); err != nil {
@@ -99,30 +111,17 @@ func (c *conn) startup() error {
 	}
 	c.processId, c.secretKey = processId, secretKey
 
-	if err := c.r.readMessage(); err != nil {
-		return err
-	}
-	txStatus, err := c.r.readyForQuery()
-	if err != nil {
-		return err
-	}
-	c.txStatus = txStatus
-	return nil
+	return c.readyForQuery()
 }
 
-type metadata struct {
-	parameterOids []int
-	fields        []field
-}
-
-func (c *conn) getQueryMetadata(preparedStatement, query string) (*metadata, error) {
+func (c *conn) getQueryMetadata(query string) (*metadata, error) {
 	// TODO: cleanup needed of prepared statements?
 
 	c.b.reset()
-	if err := c.b.parse(preparedStatement, query); err != nil {
+	if err := c.b.parse("", query); err != nil {
 		return nil, err
 	}
-	if err := c.b.describeStatement(preparedStatement); err != nil {
+	if err := c.b.describeStatement(""); err != nil {
 		return nil, err
 	}
 	c.b.sync()
@@ -150,6 +149,10 @@ func (c *conn) getQueryMetadata(preparedStatement, query string) (*metadata, err
 	}
 	fields, err := c.r.rowDescription()
 	if err != nil {
+		return nil, err
+	}
+
+	if err := c.readyForQuery(); err != nil {
 		return nil, err
 	}
 

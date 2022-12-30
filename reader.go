@@ -284,17 +284,6 @@ func (r *reader) parameterDescription() ([]int, error) {
 	return oids, nil
 }
 
-type field struct {
-	name string
-
-	maybeTableOid              int
-	maybeColumnAttributeNumber int
-
-	typeOid      int
-	typeSize     int
-	typeModifier int
-}
-
 func (r *reader) rowDescription() ([]field, error) {
 	if err := r.expectKind('T'); err != nil {
 		return nil, err

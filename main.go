@@ -10,12 +10,11 @@ import (
 // TODO: maybe rename usages of kind to type
 
 const (
-	timeout                   = 5 * time.Second
-	postgresAddr              = ":5432"
-	postgresUser              = "erik"
-	postgresDb                = "data"
-	postgresPreparedStatement = "tmp" // TODO
-	postgresTestQuery         = "select table_id, action from events where value = $1"
+	timeout           = 5 * time.Second
+	postgresAddr      = ":5432"
+	postgresUser      = "erik"
+	postgresDb        = "data"
+	postgresTestQuery = "select table_id, action from events where value = $1"
 )
 
 func main() {
@@ -43,7 +42,7 @@ func runConn(c *conn) error {
 		return err
 	}
 
-	meta, err := c.getQueryMetadata(postgresPreparedStatement, postgresTestQuery)
+	meta, err := c.getQueryMetadata(postgresTestQuery)
 	if err != nil {
 		return err
 	}
