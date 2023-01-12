@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -57,13 +58,20 @@ func runConn(c *Conn) error {
 		attnum := check2(c.FieldInt(1))
 		attname := c.FieldBorrowRawBytes(2)
 		attnotnull := check2(c.FieldBool(3))
-		fmt.Printf("%d - %d (notnull? %t): %s\n", attrelid, attnum, attnotnull, attname)
+		_, err := fmt.Fprintf(io.Discard, "%d - %d (notnull? %t): %s\n", attrelid, attnum, attnotnull, attname)
+		if err != nil {
+			return err
+		}
 	}
 	if err := c.CloseQuery(); err != nil {
 		return err
 	}
 	fmt.Println(time.Since(start))
 	fmt.Println(c.LastCommand, c.LastRowCount)
+
+	if err := c.RunQuery(" \n \t "); err != nil {
+		fmt.Println(err)
+	}
 
 	return nil
 }

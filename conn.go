@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/xdg-go/scram"
@@ -48,7 +49,8 @@ type Field struct {
 	FormatCode int
 }
 
-// TODO: tx support, context support, long timeouts (for queries)
+// TODO: tx support, context support (with query cancellation),
+// long timeouts (for queries), Extended Query (with binary and pipelining)
 type Conn struct {
 	c *timeoutConn
 	r *reader
@@ -302,10 +304,10 @@ func (c *Conn) GetQueryMetadata(query string) error {
 	return c.sync()
 }
 
+var errBlankQueryString = errors.New("blank query string")
+
 func (c *Conn) RunQuery(query string) error {
 	// TODO: support DDL / DML
-	// TODO: handle empty EmptyQueryResponse, probably just check the string before
-	// TODO: support Extended Query (with binary and pipelining)
 
 	if err := c.sync(); err != nil {
 		return err
@@ -315,6 +317,10 @@ func (c *Conn) RunQuery(query string) error {
 	c.lastRowError = nil
 	c.LastCommand = CommandUnknown
 	c.LastRowCount = 0
+
+	if strings.TrimSpace(query) == "" {
+		return errBlankQueryString
+	}
 
 	c.b.reset()
 	if err := c.b.query(query); err != nil {
