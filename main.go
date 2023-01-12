@@ -31,13 +31,13 @@ func run() error {
 	}
 	defer c.Close()
 
-	if err := c.GetQueryMetadata("select table_id, action from events where info = $1"); err != nil {
+	if _, err := c.GetQueryMetadata("select table_id, action from events where info = $1"); err != nil {
 		return err
 	}
 	fmt.Printf("%+v\n", c.CurrentParameterOids)
 	fmt.Printf("%+v\n", c.CurrentFields)
 
-	if err := c.GetQueryMetadata("invalid query"); err != nil {
+	if _, err := c.GetQueryMetadata("invalid query"); err != nil {
 		fmt.Println(err)
 	}
 
@@ -68,8 +68,12 @@ func run() error {
 
 	const ddlQuery = `insert into users(id, name, password_bcrypt)
 		values(nextval('serial_test_id_seq'), nextval('serial_test_id_seq'), 'unsafe')`
-	if err := c.GetQueryMetadata(ddlQuery); err != nil {
+	withRowDescription, err := c.GetQueryMetadata(ddlQuery)
+	if err != nil {
 		return err
+	}
+	if withRowDescription {
+		return errors.New("unexpected row description")
 	}
 	if len(c.CurrentFields) != 0 {
 		return errors.New("non empty row with ddl")
@@ -100,8 +104,17 @@ func run() error {
 		for i := decl.startLineIndex; i <= decl.endLineIndex; i++ {
 			fmt.Printf("%s", h.lineAt(i))
 		}
-		fmt.Println("------")
+		if err := decl.parseHeader(); err != nil {
+			return err
+		}
+		fmt.Printf("%#v\n", decl)
+		fmt.Printf("%s (%s)\n", decl.structName, decl.resultKind)
+		fmt.Println("--------------------------")
 	}
+
+	fmt.Println(c.GetQueryMetadata("select from pg_attribute"))
+	fmt.Printf("%+v\n", c.CurrentParameterOids)
+	fmt.Printf("%+v\n", c.CurrentFields)
 
 	return nil
 }

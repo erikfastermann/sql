@@ -265,57 +265,62 @@ func (c *Conn) consumeSync() error {
 	}
 }
 
-func (c *Conn) GetQueryMetadata(query string) error {
+func (c *Conn) GetQueryMetadata(query string) (withRowDescription bool, err error) {
 	if err := c.sync(); err != nil {
-		return err
+		return false, err
 	}
 
 	c.b.reset()
 	if err := c.b.parse("", query); err != nil {
-		return err
+		return false, err
 	}
 	if err := c.b.describeStatement(""); err != nil {
-		return err
+		return false, err
 	}
 	c.b.sync()
 	if err := c.writeMessage(); err != nil {
-		return err
+		return false, err
 	}
 	c.needSync = true
 
 	if err := c.r.readMessage(); err != nil {
-		return err
+		return false, err
 	}
 	if err := c.r.parseComplete(); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := c.r.readMessage(); err != nil {
-		return err
+		return false, err
 	}
 	if err := c.r.parameterDescription(); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := c.r.readMessage(); err != nil {
-		return err
+		return false, err
 	}
 	kind, err := c.r.peekKind()
 	if err != nil {
-		return err
+		return false, err
 	}
+	gotRowDescription := false
 	if kind == 'n' {
 		if err := c.r.noData(); err != nil {
-			return err
+			return false, err
 		}
 		c.CurrentFields = c.CurrentFields[:0]
 	} else {
+		gotRowDescription = true
 		if err := c.r.rowDescription(); err != nil {
-			return err
+			return false, err
 		}
 	}
 
-	return c.sync()
+	if err := c.sync(); err != nil {
+		return false, err
+	}
+	return gotRowDescription, nil
 }
 
 func (c *Conn) Execute(query string) error {

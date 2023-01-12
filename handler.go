@@ -9,12 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-type declaration struct {
-	startLineIndex int
-	// blank line or last line with data
-	endLineIndex int
-}
-
 type handler struct {
 	b              bytes.Buffer
 	newlineOffsets []int
@@ -38,7 +32,7 @@ func (h *handler) init(path string) error {
 		// TODO: get invalid rune position
 		return errInvalidUtf8
 	}
-	// check against cache? -> sum := sha256.Sum256(b.Bytes())
+	// TODO: check against cache? -> sum := sha256.Sum256(b.Bytes())
 	h.calculateNewlineOffsets()
 	return nil
 }
@@ -92,6 +86,8 @@ func (e *parserError) Error() string {
 	return fmt.Sprintf("line %d: %s", e.line, e.msg)
 }
 
+const headerStartComment = "--- "
+
 func (h *handler) buildDeclarations() error {
 	// We try to handle comments and strings in a database general way.
 	// Double and single quotes can span multiple lines. Repetition esacpes them.
@@ -142,7 +138,8 @@ func (h *handler) buildDeclarations() error {
 					state = markerNone
 				}
 			case markerLineComment:
-				isDeclaration := len(trimmed) >= 4 && string(trimmed[:4]) == "--- "
+				isDeclaration := len(trimmed) >= len(headerStartComment) &&
+					string(trimmed[:len(headerStartComment)]) == headerStartComment
 				if isDeclaration {
 					if insideDeclarationBlock {
 						return &parserError{
@@ -153,6 +150,7 @@ func (h *handler) buildDeclarations() error {
 					h.declarations = append(h.declarations, declaration{
 						startLineIndex: lineIndex,
 						endLineIndex:   h.lineCount() - 1,
+						header:         bytes.TrimSpace(trimmed[len(headerStartComment):]),
 					})
 					insideDeclarationBlock = true
 				}
@@ -172,7 +170,6 @@ func (h *handler) buildDeclarations() error {
 		}
 	}
 
-	// TODO: report correct lines
 	switch state {
 	case markerNone:
 		return nil
@@ -246,4 +243,132 @@ func nextQuoted(remainder []byte, quote byte) (newRemainder []byte, stateChange 
 	} else {
 		return remainder[index+1:], true
 	}
+}
+
+// TODO:
+//   - dependency tracking
+//   - check valid go identifier
+
+type resultKind int
+
+const (
+	resultInvalid resultKind = iota
+
+	resultNone   // Statement does not return rows.
+	resultOption // Statement returns exactly zero or one row.
+	resultOne    // Statement returns exactly one row.
+	resultMany   // Statement returns 0..n rows.
+
+	resultLength
+)
+
+var resultKinds = [resultLength]string{
+	resultInvalid: "invalid",
+	resultNone:    "no-result (`!`)",
+	resultOption:  "option (`?`)",
+	resultOne:     "one",
+	resultMany:    "many (`+`)",
+}
+
+func (r resultKind) String() string {
+	if r < 0 || r > resultLength {
+		return resultKinds[resultInvalid]
+	}
+	return resultKinds[r]
+}
+
+type declaration struct {
+	startLineIndex int
+	// blank line or last line with data
+	endLineIndex int
+	header       []byte
+
+	// the following fields are set by calling parse
+
+	resultKind resultKind
+	// Columns are mapped to multiple return values.
+	// With resultMany, only queries that return a single column are supported.
+	noStruct      bool
+	structName    []byte // only used with mode{Option,One,Many}
+	funcName      []byte // might be empty, if structName is set
+	columnOptions []columnOption
+}
+
+var (
+	errBlankHeader          = errors.New("header is blank")
+	errResultNoneWithOption = errors.New(
+		"specified result kind as none with `!`, but used `?` (optional)",
+	)
+	errResultNoneWithMany = errors.New(
+		"specified result kind as none with `!`, but used `+` (many)",
+	)
+	errHeaderExtraContent = errors.New("unexpected extra content in header") // TODO: include string
+)
+
+func (d *declaration) parseHeader() error {
+	remainder := d.header
+
+	if len(remainder) == 0 {
+		return errBlankHeader
+	}
+
+	switch remainder[0] {
+	case '#':
+		d.noStruct = true
+		remainder = remainder[1:]
+	case '!':
+		d.resultKind = resultNone
+		remainder = remainder[1:]
+	}
+
+	// TODO: prefix func identifier
+
+	nextMarker := bytes.IndexAny(remainder, " ?+")
+	if nextMarker < 0 {
+		if d.resultKind == resultInvalid {
+			d.resultKind = resultOne
+		}
+		d.structName = remainder
+		return nil
+	}
+
+	d.structName = remainder[:nextMarker]
+	switch remainder[nextMarker] {
+	case ' ':
+		if d.resultKind == resultInvalid {
+			d.resultKind = resultOne
+		}
+	case '?':
+		if d.resultKind == resultNone {
+			return errResultNoneWithOption
+		}
+		if d.resultKind != resultInvalid {
+			panic("unreachable")
+		}
+		d.resultKind = resultOption
+	case '+':
+		if d.resultKind == resultNone {
+			return errResultNoneWithMany
+		}
+		if d.resultKind != resultInvalid {
+			panic("unreachable")
+		}
+		d.resultKind = resultMany
+	default:
+		panic("unreachable")
+	}
+
+	remainder = remainder[nextMarker+1:]
+	// TODO: column nullability spec
+	if len(remainder) != 0 {
+		return errHeaderExtraContent
+	}
+
+	return nil
+}
+
+type columnOption struct {
+	index     int // starts at 1, use names if < 0
+	tableName string
+	name      string // column or field name
 }
