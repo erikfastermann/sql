@@ -56,10 +56,10 @@ GetFoo -> Foo?
 for column nullability options see original idea
 */
 
---- GetNameAndFriendName -> NameAndFriendName? {1: notnull, foo.bar: null, baz: notnull}
+--- GetNameAndFriendName -> NameAndFriendName? {1: notnull, fname: null}
 -- or dml (only returns an error),
 -- many (returns an iterator of the type with an error each and a normal error)
-select p.id, p.name, friend.name
+select p.id, p.name, friend.name as fname
 from person as /*blub*/p
 join person as friend on friend.id = p.friend_id
 where p.id = $1;

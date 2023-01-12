@@ -13,8 +13,6 @@ type parser struct {
 	b              bytes.Buffer
 	newlineOffsets []int
 	declarations   []declaration
-
-	tempBuffer tempBuffer
 }
 
 var errInvalidUtf8 = errors.New("invalid utf8")

@@ -77,14 +77,10 @@ func loadConfig(path string) (*config, error) {
 }
 
 type builder struct {
-	config *config
-
-	conn *postgres.Conn // TODO: pool
-
-	relations  map[int]string // oid -> relname
+	config     *config
+	conn       *postgres.Conn // TODO: pool
 	attributes map[pgAttributeKey]pgAttributeValue
-
-	parser parser
+	parser     parser
 }
 
 func newBuilder(config *config) (*builder, error) {
@@ -97,39 +93,14 @@ func newBuilder(config *config) (*builder, error) {
 	if err != nil {
 		return nil, err
 	}
-	relations, err := getPostgresRelations(conn)
-	if err != nil {
-		return nil, err
-	}
 
 	b := &builder{
 		config:     config,
 		conn:       conn,
 		attributes: attributes,
-		relations:  relations,
 	}
 
 	return b, nil
-}
-
-func getPostgresRelations(c *postgres.Conn) (oidToName map[int]string, err error) {
-	const query = "select oid, relname from pg_class where reltype <> 0"
-	if err := c.RunQuery(query); err != nil {
-		return nil, err
-	}
-	relations := make(map[int]string)
-	for c.NextRow() {
-		oid := util.Check2(c.FieldInt(0))
-		attname := string(c.FieldBorrowRawBytes(1))
-		if _, ok := relations[oid]; ok {
-			panic("internal error")
-		}
-		relations[oid] = attname
-	}
-	if err := c.CloseQuery(); err != nil {
-		return nil, err
-	}
-	return relations, nil
 }
 
 type pgAttributeKey struct {
@@ -219,63 +190,156 @@ func (b *builder) processFile(path string) error {
 	return nil
 }
 
+type field struct {
+	name    string
+	typ     TypeInfo
+	notNull bool
+}
+
+var (
+	errResultNoneHasRowDescription = errors.New(
+		"sepcified result kind none (`!`), but query returns rows",
+	)
+	errNoColumns = errors.New(
+		"query returns no columns, only allowed with result kind none (`!`)",
+	)
+	errColumnOptionDuplicate = errors.New(
+		"multiple column options reference the same field",
+	)
+	errResultDirectManyWithMoreThanOneColumn = errors.New(
+		"result kind direct (`#`) with count many (`+`) returns not exactly one column",
+	)
+	errBlankFieldName = errors.New("blank field name")
+)
+
 func (b *builder) processDeclaration(decl *declaration) error {
 	if err := decl.parse(&b.parser); err != nil {
 		return err
 	}
 
-	// TODO: use row description?
-	_, err := b.conn.GetQueryMetadata(decl.body)
+	withRowDescription, err := b.conn.GetQueryMetadata(decl.body)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(decl.String())
-	fmt.Println("---")
-
-	for _, f := range b.conn.CurrentFields {
-		if f.MaybeTableOid != 0 {
-			relName, ok := b.relations[f.MaybeTableOid]
-			if !ok {
-				panic("internal error")
-			}
-			key := pgAttributeKey{
-				relid: f.MaybeTableOid,
-				num:   f.MaybeColumnAttributeNumber,
-			}
-			attr, ok := b.attributes[key]
-			if !ok {
-				panic("internal error")
-			}
-
-			fmt.Printf("%q.%q (not null? %t)\n", relName, attr.name, attr.notNull)
-		}
-		fmt.Printf("%q\n", f.Name)
-		typ, ok := b.config.PostgresOidToGoType[f.TypeOid]
-		if !ok {
-			// TODO:
-			// maybe lookup oid in db for better error message
-			// or create copy paste config diff
-			return fmt.Errorf("unknown type oid %d", f.TypeOid)
-		}
-		fmt.Printf("%+v\n", typ)
-		fmt.Println("---")
+	if decl.resultKind == resultNone && withRowDescription {
+		return errResultNoneHasRowDescription
 	}
 
-	for _, oid := range b.conn.CurrentParameterOids {
+	parameters := make([]TypeInfo, len(b.conn.CurrentParameterOids))
+	for i, oid := range b.conn.CurrentParameterOids {
 		typ, ok := b.config.PostgresOidToGoType[oid]
 		if !ok {
-			// TODO:
-			// maybe lookup oid in db for better error message
-			// or create copy paste config diff
 			return fmt.Errorf("unknown type oid %d", oid)
 		}
-		fmt.Printf("%+v\n", typ)
+		parameters[i] = typ
 	}
 
-	fmt.Println("-------------")
+	fields, err := b.processFields(decl)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%+v\n", parameters)
+	fmt.Printf("%+v\n", fields)
 
 	return nil
+}
+
+func (b *builder) processFields(decl *declaration) ([]field, error) {
+	fields := make([]field, len(b.conn.CurrentFields))
+	for i := range b.conn.CurrentFields {
+		f := &b.conn.CurrentFields[i]
+		parsedField, err := b.processField(f)
+		if err != nil {
+			return nil, err
+		}
+		fields[i] = parsedField
+	}
+
+	if decl.resultKind != resultNone && len(fields) == 0 {
+		return nil, errNoColumns
+	}
+	if decl.resultKind == resultDirect && decl.resultCount == resultMany && len(fields) != 1 {
+		return nil, errResultDirectManyWithMoreThanOneColumn
+	}
+
+	fieldNames := make(map[string]int, len(fields))
+	for i, f := range fields {
+		if _, exists := fieldNames[f.name]; exists {
+			return nil, fmt.Errorf("duplicate field name %q", f.name)
+		}
+		fieldNames[f.name] = i
+	}
+
+	seenFields := make([]bool, len(fields))
+	for _, opt := range decl.columnOptions {
+		var index int
+		if opt.index > 0 {
+			index = opt.index - 1
+			if index >= len(fields) {
+				return nil, fmt.Errorf(
+					"column option index out of range (%d, len: %d)",
+					opt.index,
+					len(fields),
+				)
+			}
+		} else {
+			var ok bool
+			index, ok = fieldNames[string(opt.name)]
+			if !ok {
+				return nil, fmt.Errorf("unknown column option field name %q", opt.name)
+			}
+		}
+		if seenFields[index] {
+			return nil, errColumnOptionDuplicate
+		}
+		fields[index].notNull = opt.notNull
+		seenFields[index] = true
+	}
+
+	// TODO: check field names are valid go identifiers with resultKind == resultStruct
+
+	return fields, nil
+}
+
+func (b *builder) processField(f *postgres.Field) (field, error) {
+	// assume not null (checked in generated code)
+	newField := field{notNull: true}
+	if f.MaybeTableOid != 0 {
+		key := pgAttributeKey{
+			relid: f.MaybeTableOid,
+			num:   f.MaybeColumnAttributeNumber,
+		}
+		attr, ok := b.attributes[key]
+		if !ok {
+			panic("internal error")
+		}
+
+		if attr.name != string(f.Name) {
+			newField.name = string(f.Name)
+		} else {
+			newField.name = attr.name
+		}
+		newField.notNull = attr.notNull
+	} else {
+		newField.name = string(f.Name)
+	}
+	if strings.TrimSpace(newField.name) == "" {
+		return field{}, errBlankFieldName
+	}
+
+	typ, ok := b.config.PostgresOidToGoType[f.TypeOid]
+	if !ok {
+		return field{}, fmt.Errorf(
+			"unknown type oid %d of field %s",
+			f.TypeOid,
+			newField.name,
+		)
+	}
+	newField.typ = typ
+
+	return newField, nil
 }
 
 func (b *builder) formatError(decl *declaration, err error) (string, bool) {

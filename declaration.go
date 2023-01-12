@@ -112,14 +112,10 @@ func (d *declaration) String() string {
 		if opt.index > 0 {
 			b.WriteString(strconv.Itoa(opt.index))
 		} else {
-			if len(opt.tableName) > 0 {
-				b.Write(opt.tableName)
-				b.WriteByte('.')
-			}
 			b.Write(opt.name)
 		}
-		b.WriteString(": (nullable? ")
-		b.WriteString(strconv.FormatBool(opt.nullable))
+		b.WriteString(": (notnull? ")
+		b.WriteString(strconv.FormatBool(opt.notNull))
 		b.WriteByte(')')
 		if i != len(d.columnOptions)-1 {
 			b.WriteString(", ")
@@ -138,7 +134,7 @@ func (d *declaration) String() string {
 var errEmptyBody = errors.New("body of declared block is empty")
 
 func (d *declaration) parse(h *parser) error {
-	if err := d.parseHeader(&h.tempBuffer); err != nil {
+	if err := d.parseHeader(); err != nil {
 		return err
 	}
 	if d.startLineIndex+1 >= d.endLineIndex {
@@ -175,13 +171,12 @@ var (
 	errResultDirectWithTwoNames = errors.New(
 		"specified result kind as direct with `#`, but used `->` (two names)",
 	)
+	errResultNoneWithColumnOptions = errors.New(
+		"column options not allowed with result kind none (`!`)",
+	)
 )
 
-type tempBuffer struct {
-	split [][]byte
-}
-
-func (d *declaration) parseHeader(t *tempBuffer) error {
+func (d *declaration) parseHeader() error {
 	// TODO: real parser
 
 	const (
@@ -264,9 +259,13 @@ func (d *declaration) parseHeader(t *tempBuffer) error {
 
 	columnOptionsRaw := match[reColumnOptions]
 	if columnOptionsRaw != nil {
-		if err := d.parseColumnOptions(columnOptionsRaw, t); err != nil {
+		if err := d.parseColumnOptions(columnOptionsRaw); err != nil {
 			return err
 		}
+	}
+
+	if d.resultKind == resultNone && len(d.columnOptions) != 0 {
+		return errResultNoneWithColumnOptions
 	}
 
 	return nil
@@ -277,94 +276,60 @@ var (
 	errColumnIndexTooSmall = errors.New("column index is too small (less than 1)")
 )
 
-func (d *declaration) parseColumnOptions(columnOptionsRaw []byte, t *tempBuffer) error {
+func (d *declaration) parseColumnOptions(columnOptionsRaw []byte) error {
 	// TODO: better error messages
 	// TODO: better parsing than string splitting
 
-	t.split = t.split[:0]
-	t.split = splitByteAppend(columnOptionsRaw, ',', t.split)
-	for _, columnOptionRaw := range t.split {
-		lastLength := len(t.split)
-		t.split = splitByteAppend(columnOptionRaw, ':', t.split)
-		columnOptionPairRaw := t.split[lastLength:]
+	columnOptionsSplittedRaw := bytes.Split(columnOptionsRaw, []byte(","))
+	for _, columnOptionRaw := range columnOptionsSplittedRaw {
+		columnOptionPairRaw := bytes.Split(columnOptionRaw, []byte(":"))
 		if len(columnOptionPairRaw) != 2 {
 			return errInvalidHeader
 		}
-		specRaw, nullableRaw := columnOptionPairRaw[0], bytes.TrimSpace(columnOptionPairRaw[1])
-		t.split = t.split[:lastLength]
+		specRaw := bytes.TrimSpace(columnOptionPairRaw[0])
+		nullableRaw := bytes.TrimSpace(columnOptionPairRaw[1])
 
-		var nullable bool
+		var notNull bool
 		switch string(nullableRaw) {
-		case "notnull":
-			nullable = false
 		case "null":
-			nullable = true
+			notNull = false
+		case "notnull":
+			notNull = true
 		default:
 			return errInvalidHeader
 		}
 
-		t.split = splitByteAppend(specRaw, ':', t.split)
-		specMaybePairRaw := t.split[lastLength:]
-		switch len(specMaybePairRaw) {
-		case 1:
-			indexOrNameRaw := bytes.TrimSpace(specMaybePairRaw[0])
-			index64, err := util.ParseInt64(indexOrNameRaw)
-			if err != nil {
-				if errors.Is(err, util.ErrOverflow) {
-					return errColumnIndexTooLarge
-				}
-				d.columnOptions = append(d.columnOptions, columnOption{
-					index:    0,
-					name:     indexOrNameRaw,
-					nullable: nullable,
-				})
-			} else {
-				index, err := util.SafeConvert[int64, int](index64)
-				if err != nil {
-					return errColumnIndexTooLarge
-				}
-				if index < 1 {
-					return errColumnIndexTooSmall
-				}
-				d.columnOptions = append(d.columnOptions, columnOption{
-					index:    index,
-					nullable: nullable,
-				})
+		indexOrNameRaw := bytes.TrimSpace(specRaw)
+		index64, err := util.ParseInt64(indexOrNameRaw)
+		if err != nil {
+			if errors.Is(err, util.ErrOverflow) {
+				return errColumnIndexTooLarge
 			}
-		case 2:
-			tableRaw := bytes.TrimSpace(specMaybePairRaw[0])
-			columnRaw := bytes.TrimSpace(specMaybePairRaw[1])
 			d.columnOptions = append(d.columnOptions, columnOption{
-				index:     0,
-				tableName: tableRaw,
-				name:      columnRaw,
-				nullable:  nullable,
+				index:   0,
+				name:    indexOrNameRaw,
+				notNull: notNull,
 			})
-		default:
-			return errInvalidHeader
+		} else {
+			index, err := util.SafeConvert[int64, int](index64)
+			if err != nil {
+				return errColumnIndexTooLarge
+			}
+			if index < 1 {
+				return errColumnIndexTooSmall
+			}
+			d.columnOptions = append(d.columnOptions, columnOption{
+				index:   index,
+				notNull: notNull,
+			})
 		}
-		t.split = t.split[:lastLength]
 	}
 
 	return nil
 }
 
-func splitByteAppend(s []byte, sep byte, out [][]byte) [][]byte {
-	remainder := s
-	for {
-		i := bytes.IndexByte(remainder, sep)
-		if i < 0 {
-			out = append(out, remainder)
-			return out
-		}
-		out = append(out, remainder[:i])
-		remainder = remainder[i+1:]
-	}
-}
-
 type columnOption struct {
-	index     int // starts at 1, use names if == 0
-	tableName []byte
-	name      []byte // column or field name
-	nullable  bool
+	index   int    // starts at 1, use names if == 0
+	name    []byte // column or field name
+	notNull bool
 }
