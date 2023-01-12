@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"time"
 )
@@ -31,6 +30,19 @@ func (c *timeoutConn) Close() error {
 	return c.c.Close()
 }
 
+type field struct {
+	name []byte // references shared row buffer
+
+	maybeTableOid              int
+	maybeColumnAttributeNumber int
+
+	typeOid      int
+	typeSize     int
+	typeModifier int
+
+	formatCode int
+}
+
 type conn struct {
 	c *timeoutConn
 	r *reader
@@ -41,6 +53,18 @@ type conn struct {
 	txStatus byte
 
 	parameterStatuses map[string]string
+
+	currentParameterOids []int
+
+	currentFields     []field
+	currentFieldNames []byte
+
+	// len(currentDataFields) == len(currentFields)
+	currentDataFields []dataField
+	rowIterationDone  bool
+	lastRowError      error
+	lastCommand       commandType
+	lastRowCount      uint64
 }
 
 func connect() (*conn, error) {
@@ -53,12 +77,11 @@ func connect() (*conn, error) {
 		timeout: timeout,
 	}
 
-	parameterStatuses := make(map[string]string)
 	c := &conn{
 		c:                 withTimeout,
-		r:                 newReader(withTimeout, parameterStatuses),
-		parameterStatuses: parameterStatuses,
+		parameterStatuses: make(map[string]string),
 	}
+	c.r = newReader(c, withTimeout)
 	return c, nil
 }
 
@@ -74,18 +97,6 @@ func (c *conn) Close() error {
 		return err
 	}
 	return c.c.Close()
-}
-
-func (c *conn) readyForQuery() error {
-	if err := c.r.readMessage(); err != nil {
-		return err
-	}
-	txStatus, err := c.r.readyForQuery()
-	if err != nil {
-		return err
-	}
-	c.txStatus = txStatus
-	return nil
 }
 
 func (c *conn) startup() error {
@@ -106,65 +117,67 @@ func (c *conn) startup() error {
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
-	processId, secretKey, err := c.r.backendKeyData()
-	if err != nil {
+	if err := c.r.backendKeyData(); err != nil {
 		return err
 	}
-	c.processId, c.secretKey = processId, secretKey
 
-	return c.readyForQuery()
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	return c.r.readyForQuery()
 }
 
-func (c *conn) getQueryMetadata(query string) (*metadata, error) {
-	// TODO: cleanup needed of prepared statements?
-
+func (c *conn) getQueryMetadata(query string) error {
 	c.b.reset()
 	if err := c.b.parse("", query); err != nil {
-		return nil, err
+		return err
 	}
 	if err := c.b.describeStatement(""); err != nil {
-		return nil, err
+		return err
 	}
 	c.b.sync()
 	if err := c.writeMessage(); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := c.r.readMessage(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := c.r.parseComplete(); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := c.r.readMessage(); err != nil {
-		return nil, err
+		return err
 	}
-	parameterOids, err := c.r.parameterDescription()
-	if err != nil {
-		return nil, err
+	if err := c.r.parameterDescription(); err != nil {
+		return err
 	}
 
 	if err := c.r.readMessage(); err != nil {
-		return nil, err
+		return err
 	}
-	fields, err := c.r.rowDescription()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.readyForQuery(); err != nil {
-		return nil, err
+	if err := c.r.rowDescription(); err != nil {
+		return err
 	}
 
-	m := &metadata{
-		parameterOids: parameterOids,
-		fields:        fields,
+	if err := c.r.readMessage(); err != nil {
+		return err
 	}
-	return m, nil
+	return c.r.readyForQuery()
 }
 
-func (c *conn) query(query string) error {
+func (c *conn) runQuery(query string) error {
+	// TODO: support DDL / DML
+	// TODO: recover from previous query errors (Sync) (testing required)
+	// TODO: handle empty EmptyQueryResponse, probably just check the string before
+	// TODO: support Extended Query (with binary and pipelining)
+
+	c.rowIterationDone = false
+	c.lastRowError = nil
+	c.lastCommand = commandUnknown
+	c.lastRowCount = 0
+
 	c.b.reset()
 	if err := c.b.query(query); err != nil {
 		return err
@@ -176,28 +189,43 @@ func (c *conn) query(query string) error {
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
-	fields, err := c.r.rowDescription()
-	if err != nil {
-		return err
+	return c.r.rowDescription()
+}
+
+func (c *conn) nextRow() bool {
+	if c.rowIterationDone || c.lastRowError != nil {
+		return false
 	}
 
-	row := make([]dataField, len(fields))
-	for {
-		if err := c.r.readMessage(); err != nil {
-			return err
+	if err := c.r.readMessage(); err != nil {
+		c.lastRowError = err
+		return false
+	}
+	kind, err := c.r.peekKind()
+	if err != nil {
+		c.lastRowError = err
+		return false
+	}
+	if kind == 'C' {
+		c.rowIterationDone = true
+		return false
+	}
+	if err := c.r.dataRow(); err != nil {
+		c.lastRowError = err
+		return false
+	}
+	return true
+}
+
+func (c *conn) finalizeQuery() error {
+	if c.lastRowError != nil {
+		return c.lastRowError
+	}
+	if !c.rowIterationDone {
+		for c.nextRow() {
 		}
-		kind, err := c.r.peekKind()
-		if err != nil {
-			return err
-		}
-		if kind == 'C' {
-			break
-		}
-		if err := c.r.dataRow(row); err != nil {
-			return err
-		}
-		for i, f := range row {
-			fmt.Printf("%d: null?: %t --- %q\n", i, f.isNull, f.value)
+		if c.lastRowError != nil {
+			return c.lastRowError
 		}
 	}
 
@@ -205,7 +233,10 @@ func (c *conn) query(query string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(command.String(), rows)
+	c.lastCommand, c.lastRowCount = command, rows
 
-	return c.readyForQuery()
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	return c.r.readyForQuery()
 }

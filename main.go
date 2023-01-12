@@ -42,11 +42,29 @@ func runConn(c *conn) error {
 		return err
 	}
 
-	meta, err := c.getQueryMetadata(postgresTestQuery)
-	if err != nil {
+	if err := c.getQueryMetadata(postgresTestQuery); err != nil {
 		return err
 	}
-	fmt.Printf("%+v\n", meta)
+	fmt.Printf("%+v\n", c.currentParameterOids)
+	fmt.Printf("%+v\n", c.currentFields)
 
-	return c.query("select attrelid, attnum, attname, attnotnull from pg_attribute")
+	start := time.Now()
+	const query = "select attrelid, attnum, attname, attnotnull from pg_attribute"
+	if err := c.runQuery(query); err != nil {
+		return err
+	}
+	fmt.Printf("\n%+v\n", c.currentFields)
+	for c.nextRow() {
+		for i, f := range c.currentDataFields {
+			fmt.Printf("%d: null?: %t --- %q\n", i, f.isNull, f.value)
+		}
+	}
+	if err := c.finalizeQuery(); err != nil {
+		return err
+	}
+	fmt.Println(time.Since(start))
+
+	fmt.Println(c.lastCommand, c.lastRowCount)
+
+	return nil
 }
