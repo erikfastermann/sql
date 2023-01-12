@@ -1,8 +1,6 @@
 package main
 
-import (
-	"strings"
-)
+import "strings"
 
 type additionalErrorAndNoticeField struct {
 	identifier byte
@@ -80,6 +78,14 @@ func (e *errorAndNoticeFields) assignField(typ byte, value string) {
 }
 
 func (e *errorAndNoticeFields) String() string {
+	var w twoPassWriter
+	e.writeTo(&w)
+	w.b.Grow(w.l)
+	e.writeTo(&w)
+	return w.b.String()
+}
+
+func (e *errorAndNoticeFields) writeTo(w *twoPassWriter) {
 	fieldMapping := [...]struct {
 		name  string
 		value string
@@ -104,32 +110,29 @@ func (e *errorAndNoticeFields) String() string {
 		{"Routine", e.routine},
 	}
 
-	var b strings.Builder
 	commaNeeded := false
 
 	for _, f := range fieldMapping {
 		if f.value != "" {
 			if commaNeeded {
-				b.WriteString(", ")
+				w.writeString(", ")
 			}
-			b.WriteString(f.name)
-			b.WriteString(": ")
-			b.WriteString(f.value)
+			w.writeString(f.name)
+			w.writeString(": ")
+			w.writeString(f.value)
 			commaNeeded = true
 		}
 	}
 
 	for _, f := range e.additional {
 		if commaNeeded {
-			b.WriteString(", ")
+			w.writeString(", ")
 		}
-		b.WriteByte(f.identifier)
-		b.WriteString(": ")
-		b.WriteString(f.value)
+		w.writeByte(f.identifier)
+		w.writeString(": ")
+		w.writeString(f.value)
 		commaNeeded = true
 	}
-
-	return b.String()
 }
 
 type postgresError struct {
@@ -142,4 +145,23 @@ func (e *postgresError) Error() string {
 
 type notice struct {
 	errorAndNoticeFields
+}
+
+type twoPassWriter struct {
+	l int
+	b strings.Builder
+}
+
+func (w *twoPassWriter) writeString(s string) {
+	if w.b.Cap() != 0 {
+		w.b.WriteString(s)
+	}
+	w.l += len(s)
+}
+
+func (w *twoPassWriter) writeByte(b byte) {
+	if w.b.Cap() != 0 {
+		w.b.WriteByte(b)
+	}
+	w.l += 1
 }
