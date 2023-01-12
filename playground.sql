@@ -21,13 +21,17 @@ if name differs from as, we use that as the name,
 but where we store that in the result struct?
 */
 
--- person.NameAndFriendName (single)
+-- alternative:
+-- GetNameAndFriendName -> NameAndFriendName (single)
+
+--- NameAndFriendName (single)
 -- or dml (only returns an error),
 -- many (returns an iterator of the type with an error each and a normal error)
 select p.id, p.name, friend.name
-from person as p
+from person as /*blub*/p
 join person as friend on friend.id = p.friend_id
 where p.id = ?;
+
 /*
 type NameAndFriendName struct {
     Person struct {

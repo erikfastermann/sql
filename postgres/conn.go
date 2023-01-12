@@ -354,6 +354,7 @@ func (c *Conn) queryBase(query string) error {
 	c.LastRowCount = 0
 
 	if strings.TrimSpace(query) == "" {
+		// TODO: probably does not work if the line is only a comment
 		return errBlankQueryString
 	}
 

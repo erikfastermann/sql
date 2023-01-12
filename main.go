@@ -87,5 +87,21 @@ func run() error {
 		return err
 	}
 
+	var h handler
+	if err := h.init("playground.sql"); err != nil {
+		return err
+	}
+	if err := h.buildDeclarations(); err != nil {
+		return err
+	}
+	for _, decl := range h.declarations {
+		// <= is not a mistake here
+		fmt.Println("--- DECL ---")
+		for i := decl.startLineIndex; i <= decl.endLineIndex; i++ {
+			fmt.Printf("%s", h.lineAt(i))
+		}
+		fmt.Println("------")
+	}
+
 	return nil
 }
