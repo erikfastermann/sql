@@ -25,6 +25,29 @@ func main() {
 }
 
 func run() error {
+	var h handler
+	if err := h.init("playground.sql"); err != nil {
+		return err
+	}
+	if err := h.buildDeclarations(); err != nil {
+		return err
+	}
+	for _, decl := range h.declarations {
+		// <= is not a mistake here
+		fmt.Println("--- DECL ---")
+		for i := decl.startLineIndex; i <= decl.endLineIndex; i++ {
+			fmt.Printf("%s", h.lineAt(i))
+		}
+		if err := decl.parseHeader(); err != nil {
+			return err
+		}
+		fmt.Printf("%#v\n", decl)
+		fmt.Printf("%s, %s\n", decl.resultKind, decl.resultCount)
+		fmt.Printf("func: %s\n", decl.funcName)
+		fmt.Printf("struct: %s\n", decl.structName)
+		fmt.Println("--------------------------")
+	}
+
 	c, err := postgres.Connect(":5432", "erik", "unsafepassword", "data")
 	if err != nil {
 		return err
@@ -89,27 +112,6 @@ func run() error {
 	}
 	if err := c.CloseQuery(); err != nil {
 		return err
-	}
-
-	var h handler
-	if err := h.init("playground.sql"); err != nil {
-		return err
-	}
-	if err := h.buildDeclarations(); err != nil {
-		return err
-	}
-	for _, decl := range h.declarations {
-		// <= is not a mistake here
-		fmt.Println("--- DECL ---")
-		for i := decl.startLineIndex; i <= decl.endLineIndex; i++ {
-			fmt.Printf("%s", h.lineAt(i))
-		}
-		if err := decl.parseHeader(); err != nil {
-			return err
-		}
-		fmt.Printf("%#v\n", decl)
-		fmt.Printf("%s (%s)\n", decl.structName, decl.resultKind)
-		fmt.Println("--------------------------")
 	}
 
 	fmt.Println(c.GetQueryMetadata("select from pg_attribute"))

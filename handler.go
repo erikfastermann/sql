@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"unicode/utf8"
 )
+
+// TODO: rename to parser
 
 type handler struct {
 	b              bytes.Buffer
@@ -144,7 +147,7 @@ func (h *handler) buildDeclarations() error {
 					if insideDeclarationBlock {
 						return &parserError{
 							line: lineIndex + 1,
-							msg:  "declaration blocks must be separated by a space",
+							msg:  "declaration blocks must be separated by a blank line",
 						}
 					}
 					h.declarations = append(h.declarations, declaration{
@@ -237,8 +240,8 @@ func nextQuoted(remainder []byte, quote byte) (newRemainder []byte, stateChange 
 	if isLast {
 		return nil, true
 	}
-	escapedSingleQuote := remainder[index+1] == quote
-	if escapedSingleQuote {
+	escaped := remainder[index+1] == quote
+	if escaped {
 		return remainder[index+2:], false
 	} else {
 		return remainder[index+1:], true
@@ -252,29 +255,57 @@ func nextQuoted(remainder []byte, quote byte) (newRemainder []byte, stateChange 
 type resultKind int
 
 const (
-	resultInvalid resultKind = iota
+	resultKindInvalid resultKind = iota
 
-	resultNone   // Statement does not return rows.
+	resultNone // Statement returns exactly zero rows.
+	// A struct is generated or referenced as the
+	// return value by the generated function.
+	resultStruct
+	// Columns are mapped to multiple return values.
+	// With resultMany, only queries that return a single column are supported.
+	resultDirect
+
+	resultKindLength
+)
+
+var resultKinds = [resultKindLength]string{
+	resultKindInvalid: "invalid",
+	resultNone:        "none (`!`)",
+	resultStruct:      "struct",
+	resultDirect:      "direct (`#`)",
+}
+
+func (r resultKind) String() string {
+	if r < 0 || r >= resultKindLength {
+		return resultKinds[resultKindInvalid]
+	}
+	return resultKinds[r]
+}
+
+type resultCount int
+
+const (
+	resultCountInvalid resultCount = iota
+
 	resultOption // Statement returns exactly zero or one row.
 	resultOne    // Statement returns exactly one row.
 	resultMany   // Statement returns 0..n rows.
 
-	resultLength
+	resultCountLength
 )
 
-var resultKinds = [resultLength]string{
-	resultInvalid: "invalid",
-	resultNone:    "no-result (`!`)",
-	resultOption:  "option (`?`)",
-	resultOne:     "one",
-	resultMany:    "many (`+`)",
+var resultCounts = [resultCountLength]string{
+	resultCountInvalid: "invalid",
+	resultOption:       "option (`?`)",
+	resultOne:          "one",
+	resultMany:         "many (`+`)",
 }
 
-func (r resultKind) String() string {
-	if r < 0 || r > resultLength {
-		return resultKinds[resultInvalid]
+func (r resultCount) String() string {
+	if r < 0 || r >= resultCountLength {
+		return resultCounts[resultCountInvalid]
 	}
-	return resultKinds[r]
+	return resultCounts[r]
 }
 
 type declaration struct {
@@ -285,84 +316,122 @@ type declaration struct {
 
 	// the following fields are set by calling parse
 
-	resultKind resultKind
-	// Columns are mapped to multiple return values.
-	// With resultMany, only queries that return a single column are supported.
-	noStruct      bool
-	structName    []byte // only used with mode{Option,One,Many}
-	funcName      []byte // might be empty, if structName is set
+	resultKind              resultKind
+	resultCount             resultCount
+	resultStructHasFuncName bool
+
+	funcName      []byte // might be empty if resultKind == resultStruct
+	structName    []byte // only set if resultKind == resultStruct
 	columnOptions []columnOption
 }
 
+const (
+	regexpIdentifier          = `(\pL+[\pL\pN]*)`
+	regexpIdentifierWithEdges = `(([#!]?)` + regexpIdentifier + `([\?\+]?))`
+	regexpTwoNames            = "(" + regexpIdentifier + " -> " + regexpIdentifierWithEdges + ")"
+	regexpHeader              = "^" + regexpTwoNames + "|" + regexpIdentifierWithEdges
+)
+
+var headerMatcher = regexp.MustCompile(regexpHeader)
+
 var (
-	errBlankHeader          = errors.New("header is blank")
+	errInvalidHeader        = errors.New("declaration header is invalid") // TODO: nicer error
 	errResultNoneWithOption = errors.New(
 		"specified result kind as none with `!`, but used `?` (optional)",
 	)
 	errResultNoneWithMany = errors.New(
 		"specified result kind as none with `!`, but used `+` (many)",
 	)
+	errResultNoneWithTwoNames = errors.New(
+		"specified result kind as none with `!`, but used `->` (two names)",
+	)
+	errResultDirectWithTwoNames = errors.New(
+		"specified result kind as direct with `#`, but used `->` (two names)",
+	)
 	errHeaderExtraContent = errors.New("unexpected extra content in header") // TODO: include string
 )
 
 func (d *declaration) parseHeader() error {
-	remainder := d.header
+	// TODO: real parser
 
-	if len(remainder) == 0 {
-		return errBlankHeader
+	match := headerMatcher.FindSubmatch(d.header)
+	if len(match) == 0 {
+		return errInvalidHeader
+	}
+	if len(match) != 11 {
+		panic("internal error")
 	}
 
-	switch remainder[0] {
-	case '#':
-		d.noStruct = true
-		remainder = remainder[1:]
-	case '!':
+	const (
+		reTwoNames             = 1
+		reTwoNamesFuncName     = 2
+		reTwoNamesEdgesStart   = 3
+		reSingleNameEdgesStart = 7
+	)
+	const (
+		rePrefixOffset = 1
+		reNameOffset   = 2
+		reSuffixOffset = 3
+	)
+
+	edgesStart := reSingleNameEdgesStart
+	hasTwoNames := match[reTwoNames] != nil
+	if hasTwoNames {
+		edgesStart = reTwoNamesEdgesStart
+	}
+
+	prefix := match[edgesStart+rePrefixOffset]
+	name := match[edgesStart+reNameOffset]
+	suffix := match[edgesStart+reSuffixOffset]
+
+	switch string(prefix) {
+	case "!":
+		if hasTwoNames {
+			return errResultNoneWithTwoNames
+		}
 		d.resultKind = resultNone
-		remainder = remainder[1:]
-	}
-
-	// TODO: prefix func identifier
-
-	nextMarker := bytes.IndexAny(remainder, " ?+")
-	if nextMarker < 0 {
-		if d.resultKind == resultInvalid {
-			d.resultKind = resultOne
+		d.funcName = name
+	case "":
+		d.resultKind = resultStruct
+		if hasTwoNames {
+			d.resultStructHasFuncName = true
+			d.funcName = match[reTwoNamesFuncName]
+			d.structName = name
+		} else {
+			d.resultStructHasFuncName = false
+			d.structName = name
 		}
-		d.structName = remainder
-		return nil
-	}
-
-	d.structName = remainder[:nextMarker]
-	switch remainder[nextMarker] {
-	case ' ':
-		if d.resultKind == resultInvalid {
-			d.resultKind = resultOne
+	case "#":
+		if hasTwoNames {
+			return errResultDirectWithTwoNames
 		}
-	case '?':
-		if d.resultKind == resultNone {
-			return errResultNoneWithOption
-		}
-		if d.resultKind != resultInvalid {
-			panic("unreachable")
-		}
-		d.resultKind = resultOption
-	case '+':
-		if d.resultKind == resultNone {
-			return errResultNoneWithMany
-		}
-		if d.resultKind != resultInvalid {
-			panic("unreachable")
-		}
-		d.resultKind = resultMany
+		d.resultKind = resultDirect
+		d.funcName = name
 	default:
 		panic("unreachable")
 	}
 
-	remainder = remainder[nextMarker+1:]
-	// TODO: column nullability spec
-	if len(remainder) != 0 {
-		return errHeaderExtraContent
+	switch string(suffix) {
+	case "?":
+		if d.resultKind == resultNone {
+			return errResultNoneWithOption
+		}
+		d.resultCount = resultOption
+	case "":
+		if d.resultKind != resultNone {
+			d.resultCount = resultOne
+		}
+	case "+":
+		if d.resultKind == resultNone {
+			return errResultNoneWithMany
+		}
+		d.resultCount = resultMany
+	default:
+		panic("unreachable")
 	}
+
+	// TODO: check no remaining content in header
+	// TODO: column nullability spec
 
 	return nil
 }

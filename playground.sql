@@ -57,7 +57,7 @@ GetFoo -> Foo?
 for column nullability options see original idea
 */
 
---- #NameAndFriendName?
+--- GetNameAndFriendName -> NameAndFriendName?
 -- or dml (only returns an error),
 -- many (returns an iterator of the type with an error each and a normal error)
 select p.id, p.name, friend.name
