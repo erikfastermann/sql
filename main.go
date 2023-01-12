@@ -33,18 +33,10 @@ func run() error {
 		return err
 	}
 	for _, decl := range h.declarations {
-		// <= is not a mistake here
-		fmt.Println("--- DECL ---")
-		for i := decl.startLineIndex; i <= decl.endLineIndex; i++ {
-			fmt.Printf("%s", h.lineAt(i))
-		}
-		if err := decl.parseHeader(&h.tempBuffer); err != nil {
+		if err := decl.parse(&h); err != nil {
 			return err
 		}
-		fmt.Printf("%#v\n", decl)
-		fmt.Printf("%s, %s\n", decl.resultKind, decl.resultCount)
-		fmt.Printf("func: %s\n", decl.funcName)
-		fmt.Printf("struct: %s\n", decl.structName)
+		fmt.Println(decl.String())
 		fmt.Println("--------------------------")
 	}
 

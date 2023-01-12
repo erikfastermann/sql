@@ -7,6 +7,8 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/erikfastermann/sql/util"
@@ -65,23 +67,35 @@ func (h *handler) lineCount() int {
 }
 
 func (h *handler) lineAt(index int) []byte {
+	from, to := h.linaAtRange(index)
+	return h.b.Bytes()[from:to]
+}
+
+func (h *handler) lineSlice(from, to int) []byte {
+	sliceFrom, _ := h.linaAtRange(from)
+	_, sliceTo := h.linaAtRange(to)
+	return h.b.Bytes()[sliceFrom:sliceTo]
+}
+
+func (h *handler) linaAtRange(index int) (from, to int) {
 	if index < 0 || index > len(h.newlineOffsets) {
 		panic(errLineIndexOutOfBounds)
 	}
+
 	b := h.b.Bytes()
 	if index == len(h.newlineOffsets) {
 		if len(h.newlineOffsets) == 0 {
-			return b
+			return 0, len(b)
 		}
-		start := h.newlineOffsets[len(h.newlineOffsets)-1] + 1
-		return b[start:]
+		from := h.newlineOffsets[len(h.newlineOffsets)-1] + 1
+		return from, len(b)
 	}
-	start := 0
+	from = 0
 	if index != 0 {
-		start = h.newlineOffsets[index-1] + 1
+		from = h.newlineOffsets[index-1] + 1
 	}
-	end := h.newlineOffsets[index] + 1
-	return b[start:end]
+	to = h.newlineOffsets[index] + 1
+	return from, to
 }
 
 type parserError struct {
@@ -328,6 +342,71 @@ type declaration struct {
 	funcName      []byte // might be empty if resultKind == resultStruct
 	structName    []byte // only set if resultKind == resultStruct
 	columnOptions []columnOption
+
+	body []byte
+}
+
+func (d *declaration) String() string {
+	var b strings.Builder
+
+	if len(d.funcName) != 0 {
+		b.Write(d.funcName)
+		if len(d.structName) != 0 {
+			b.WriteString(" -> ")
+		}
+	}
+	if len(d.structName) != 0 {
+		b.Write(d.structName)
+	}
+	b.WriteByte(' ')
+
+	b.WriteByte('(')
+	b.WriteString(d.resultKind.String())
+	b.WriteString(" (")
+	b.WriteString(d.resultCount.String())
+	b.WriteString("))")
+
+	if len(d.columnOptions) > 0 {
+		b.WriteString(" [")
+	}
+	for i, opt := range d.columnOptions {
+		if opt.index > 0 {
+			b.WriteString(strconv.Itoa(opt.index))
+		} else {
+			if len(opt.tableName) > 0 {
+				b.Write(opt.tableName)
+				b.WriteByte('.')
+			}
+			b.Write(opt.name)
+		}
+		b.WriteString(": (nullable? ")
+		b.WriteString(strconv.FormatBool(opt.nullable))
+		b.WriteByte(')')
+		if i != len(d.columnOptions)-1 {
+			b.WriteString(", ")
+		}
+	}
+	if len(d.columnOptions) > 0 {
+		b.WriteString("]")
+	}
+
+	b.WriteByte('\n')
+	b.Write(d.body)
+
+	return b.String()
+}
+
+var errEmptyBody = errors.New("body of declared block is empty")
+
+func (d *declaration) parse(h *handler) error {
+	if err := d.parseHeader(&h.tempBuffer); err != nil {
+		return err
+	}
+	if d.startLineIndex+1 >= d.endLineIndex {
+		return errEmptyBody
+	}
+	d.body = bytes.TrimSpace(h.lineSlice(d.startLineIndex+1, d.endLineIndex))
+	return nil
 }
 
 const (
