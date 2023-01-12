@@ -75,12 +75,19 @@ func (b *builder) appendString(s string) {
 	b.b = append(b.b, 0)
 }
 
-func (b *builder) appendStringBytes(p []byte) {
+func (b *builder) appendBytes(p []byte) {
 	if !b.checkBytesContainsNoNull(p) {
 		return
 	}
 	b.b = append(b.b, p...)
 	b.b = append(b.b, 0)
+}
+
+func (b *builder) appendRawString(s string) {
+	if b.firstError != nil {
+		return
+	}
+	b.b = append(b.b, s...)
 }
 
 func (b *builder) finalizeMessage() error {
@@ -137,6 +144,24 @@ func (b *builder) startup() error {
 
 	b.appendByte(0)
 
+	return b.finalizeMessage()
+}
+
+func (b *builder) saslInitialResponseScramSha256(initialResponse string) error {
+	b.newMessage('p')
+	b.appendString(string(saslAuthMechanismScramSha256))
+	if len(initialResponse) == 0 {
+		b.appendInt32(-1)
+	} else {
+		b.appendInt32(len(initialResponse))
+	}
+	b.appendRawString(initialResponse)
+	return b.finalizeMessage()
+}
+
+func (b *builder) saslResponse(data string) error {
+	b.newMessage('p')
+	b.appendRawString(data)
 	return b.finalizeMessage()
 }
 

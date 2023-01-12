@@ -12,8 +12,9 @@ import (
 const (
 	timeout           = 5 * time.Second
 	postgresAddr      = ":5432"
-	postgresUser      = "erik"
-	postgresDb        = "data"
+	postgresUser      = "postgres"
+	postgresDb        = "postgres"
+	postgresPassword  = "postgres"
 	postgresTestQuery = "select table_id, action from events where value = $1"
 )
 

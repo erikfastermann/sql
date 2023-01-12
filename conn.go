@@ -3,6 +3,8 @@ package main
 import (
 	"net"
 	"time"
+
+	"github.com/xdg-go/scram"
 )
 
 type timeoutConn struct {
@@ -107,11 +109,23 @@ func (c *conn) startup() error {
 	if err := c.writeMessage(); err != nil {
 		return err
 	}
+
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
-	if err := c.r.authenticationOk(); err != nil {
+	saslAuth, err := c.r.authentication()
+	if err != nil {
 		return err
+	}
+	switch saslAuth {
+	case saslAuthMechanismNone:
+		// AuthenticationOk
+	case saslAuthMechanismScramSha256:
+		if err := c.saslAuthScramSha256(); err != nil {
+			return err
+		}
+	default:
+		panic("unreachable")
 	}
 
 	if err := c.r.readMessage(); err != nil {
@@ -125,6 +139,70 @@ func (c *conn) startup() error {
 		return err
 	}
 	return c.r.readyForQuery()
+}
+
+func (c *conn) saslAuthScramSha256() error {
+	client, err := scram.SHA256.NewClient(postgresUser, postgresPassword, "")
+	if err != nil {
+		return err
+	}
+	conv := client.NewConversation()
+
+	initialResponse, err := conv.Step("")
+	if err != nil {
+		return err
+	}
+	println(initialResponse)
+	c.b.reset()
+	if err := c.b.saslInitialResponseScramSha256(initialResponse); err != nil {
+		return err
+	}
+	if err := c.writeMessage(); err != nil {
+		return err
+	}
+
+	println("A")
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	serverMsg, err := c.r.authenticationSASLContinue()
+	if err != nil {
+		return err
+	}
+
+	println(string(serverMsg))
+	secondMsg, err := conv.Step(string(serverMsg))
+	if err != nil {
+		return err
+	}
+	println(secondMsg)
+	c.b.reset()
+	if err := c.b.saslResponse(secondMsg); err != nil {
+		return err
+	}
+	if err := c.writeMessage(); err != nil {
+		return err
+	}
+
+	println("B")
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	serverMsg, err = c.r.authenticationSASLFinal()
+	if err != nil {
+		return err
+	}
+	println(string(serverMsg))
+	if _, err := conv.Step(string(serverMsg)); err != nil {
+		return err
+	}
+
+	print("C")
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	_, err = c.r.authentication()
+	return err
 }
 
 func (c *conn) getQueryMetadata(query string) error {

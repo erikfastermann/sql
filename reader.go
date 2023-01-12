@@ -134,11 +134,11 @@ func (r *reader) readInt32() (int, error) {
 	return int(int32(u32)), nil
 }
 
-var errNegativeByteReadCount = errors.New("negative byte read count")
-
 func (r *reader) readBytes(n int) ([]byte, error) {
 	if n < 0 {
-		return nil, errNegativeByteReadCount
+		b := r.b
+		r.b = nil
+		return b, nil
 	}
 	if len(r.b) < n {
 		return nil, io.ErrUnexpectedEOF
@@ -170,21 +170,95 @@ func (r *reader) parseComplete() error {
 	return r.expectKind('1')
 }
 
-func (r *reader) authenticationOk() error {
+func (r *reader) authentication() (saslAuthMechanism, error) {
 	if err := r.expectKind('R'); err != nil {
-		return err
+		return saslAuthMechanismNone, err
 	}
 	if _, err := r.readInt32(); err != nil {
-		return err
+		return saslAuthMechanismNone, err
 	}
 	authCode, err := r.readInt32()
 	if err != nil {
-		return err
+		return saslAuthMechanismNone, err
 	}
-	if authCode != 0 {
-		return fmt.Errorf("not implemented authentication method %d requested", authCode)
+	switch authCode {
+	case 0:
+		// AuthenticationOk
+		return saslAuthMechanismNone, nil
+	case 10:
+		// AuthenticationSASL
+		return r.authenticationSASL()
+	default:
+		return saslAuthMechanismNone, fmt.Errorf("requested authentication method %d not implemented", authCode)
 	}
-	return nil
+}
+
+type saslAuthMechanism string
+
+const (
+	saslAuthMechanismNone        saslAuthMechanism = "NONE"
+	saslAuthMechanismScramSha256 saslAuthMechanism = "SCRAM-SHA-256"
+)
+
+var errSASLAuthMechanismUnsupported = errors.New("server SASL authentication mechanism not supported")
+
+func (r *reader) authenticationSASL() (saslAuthMechanism, error) {
+	for {
+		authMechanism, err := r.readString()
+		if err != nil {
+			return saslAuthMechanismNone, err
+		}
+		if len(authMechanism) == 0 {
+			// empty string == terminating null byte
+			return saslAuthMechanismNone, errSASLAuthMechanismUnsupported
+		}
+		if string(authMechanism) == string(saslAuthMechanismScramSha256) {
+			// SCRAM-SHA-256-PLUS currently unsupported
+			return saslAuthMechanismScramSha256, nil
+		}
+	}
+}
+
+func (r *reader) authenticationSASLContinue() ([]byte, error) {
+	if err := r.expectKind('R'); err != nil {
+		return nil, err
+	}
+	if _, err := r.readInt32(); err != nil {
+		return nil, err
+	}
+	authCode, err := r.readInt32()
+	if err != nil {
+		return nil, err
+	}
+	if authCode != 11 {
+		return nil, fmt.Errorf("AuthenticationSASLContinue: unknown code %d", authCode)
+	}
+	saslData, err := r.readBytes(-1)
+	if err != nil {
+		return nil, err
+	}
+	return saslData, nil
+}
+
+func (r *reader) authenticationSASLFinal() ([]byte, error) {
+	if err := r.expectKind('R'); err != nil {
+		return nil, err
+	}
+	if _, err := r.readInt32(); err != nil {
+		return nil, err
+	}
+	authCode, err := r.readInt32()
+	if err != nil {
+		return nil, err
+	}
+	if authCode != 12 {
+		return nil, fmt.Errorf("AuthenticationSASLFinal: unknown code %d", authCode)
+	}
+	saslData, err := r.readBytes(-1)
+	if err != nil {
+		return nil, err
+	}
+	return saslData, nil
 }
 
 func (r *reader) errorAndNoticeResponse(out *errorAndNoticeFields) error {
