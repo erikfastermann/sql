@@ -130,17 +130,17 @@ func (w *builder) checkBytesContainsNoNull(b []byte) bool {
 	return true
 }
 
-func (b *builder) startup() error {
+func (b *builder) startup(username, db string) error {
 	b.newMessageLengthOnly()
 
 	const protocolVersion = 196608
 	b.appendInt32(protocolVersion)
 
 	b.appendString("user")
-	b.appendString(postgresUser)
+	b.appendString(username)
 
 	b.appendString("database")
-	b.appendString(postgresDb)
+	b.appendString(db)
 
 	b.appendByte(0)
 

@@ -13,8 +13,10 @@ type timeoutConn struct {
 	timeout time.Duration
 }
 
+const connTimeout = 5 * time.Second
+
 func (c *timeoutConn) Write(p []byte) (n int, err error) {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(c.timeout)
 	if err := c.c.SetWriteDeadline(deadline); err != nil {
 		return 0, err
 	}
@@ -22,7 +24,7 @@ func (c *timeoutConn) Write(p []byte) (n int, err error) {
 }
 
 func (c *timeoutConn) Read(p []byte) (n int, err error) {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(c.timeout)
 	if err := c.c.SetReadDeadline(deadline); err != nil {
 		return 0, err
 	}
@@ -33,17 +35,17 @@ func (c *timeoutConn) Close() error {
 	return c.c.Close()
 }
 
-type field struct {
-	name []byte // references shared row buffer
+type Field struct {
+	Name []byte // references shared row buffer
 
-	maybeTableOid              int
-	maybeColumnAttributeNumber int
+	MaybeTableOid              int
+	MaybeColumnAttributeNumber int
 
-	typeOid      int
-	typeSize     int
-	typeModifier int
+	TypeOid      int
+	TypeSize     int
+	TypeModifier int
 
-	formatCode int
+	FormatCode int
 }
 
 // TODO: tx support, context support, long timeouts (for queries)
@@ -61,27 +63,27 @@ type Conn struct {
 	processId, secretKey int
 	parameterStatuses    map[string]string
 
-	currentParameterOids []int
+	CurrentParameterOids []int
 
-	currentFields     []field
+	CurrentFields     []Field
 	currentFieldNames []byte
 
 	// len(currentDataFields) == len(currentFields)
 	currentDataFields []dataField
 	rowIterationDone  bool
 	lastRowError      error
-	lastCommand       commandType
-	lastRowCount      uint64
+	LastCommand       CommandType
+	LastRowCount      int64
 }
 
-func Connect() (*Conn, error) {
-	cc, err := net.DialTimeout("tcp", postgresAddr, timeout)
+func Connect(addr, username, password, db string) (*Conn, error) {
+	cc, err := net.DialTimeout("tcp", addr, connTimeout)
 	if err != nil {
 		return nil, err
 	}
 	withTimeout := &timeoutConn{
 		c:       cc,
-		timeout: timeout,
+		timeout: connTimeout,
 	}
 
 	c := &Conn{
@@ -90,7 +92,7 @@ func Connect() (*Conn, error) {
 	}
 	c.r = newReader(c, withTimeout)
 
-	if err := c.startup(); err != nil {
+	if err := c.startup(username, password, db); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
@@ -120,9 +122,9 @@ func (c *Conn) Close() error {
 	return closeErr
 }
 
-func (c *Conn) startup() error {
+func (c *Conn) startup(username, password, db string) error {
 	c.b.reset()
-	if err := c.b.startup(); err != nil {
+	if err := c.b.startup(username, db); err != nil {
 		return err
 	}
 	if err := c.writeMessage(); err != nil {
@@ -140,7 +142,7 @@ func (c *Conn) startup() error {
 	case saslAuthMechanismNone:
 		// AuthenticationOk
 	case saslAuthMechanismScramSha256:
-		if err := c.saslAuthScramSha256(); err != nil {
+		if err := c.saslAuthScramSha256(username, password); err != nil {
 			return err
 		}
 	default:
@@ -160,8 +162,8 @@ func (c *Conn) startup() error {
 	return c.r.readyForQuery()
 }
 
-func (c *Conn) saslAuthScramSha256() error {
-	client, err := scram.SHA256.NewClient(postgresUser, postgresPassword, "")
+func (c *Conn) saslAuthScramSha256(username, password string) error {
+	client, err := scram.SHA256.NewClient(username, password, "")
 	if err != nil {
 		return err
 	}
@@ -311,8 +313,8 @@ func (c *Conn) RunQuery(query string) error {
 
 	c.rowIterationDone = false
 	c.lastRowError = nil
-	c.lastCommand = commandUnknown
-	c.lastRowCount = 0
+	c.LastCommand = CommandUnknown
+	c.LastRowCount = 0
 
 	c.b.reset()
 	if err := c.b.query(query); err != nil {
@@ -326,7 +328,7 @@ func (c *Conn) RunQuery(query string) error {
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
-	return c.r.rowDescription()
+	return c.r.rowDescription() // text format is currently assumed
 }
 
 func (c *Conn) NextRow() bool {
@@ -352,6 +354,66 @@ func (c *Conn) NextRow() bool {
 		return false
 	}
 	return true
+}
+
+var (
+	errInvalidResultRowIndex = errors.New("invalid result row index")
+	errInvalidColumnType     = errors.New("invalid column type")
+	ErrNullValue             = errors.New("null value")
+)
+
+func (c *Conn) FieldsLength() int {
+	return len(c.CurrentFields)
+}
+
+func (c *Conn) FieldIsNull(index int) bool {
+	if index < 0 || index >= len(c.currentDataFields) {
+		panic(errInvalidResultRowIndex)
+	}
+	return c.currentDataFields[index].isNull
+}
+
+func (c *Conn) FieldBorrowRawBytes(index int) []byte {
+	if index < 0 || index >= len(c.CurrentFields) {
+		panic(errInvalidResultRowIndex)
+	}
+	if c.currentDataFields[index].isNull {
+		panic(ErrNullValue)
+	}
+	return c.currentDataFields[index].value
+}
+
+func (c *Conn) FieldInt(index int) (int, error) {
+	if index < 0 || index >= len(c.CurrentFields) {
+		panic(errInvalidResultRowIndex)
+	}
+	if c.currentDataFields[index].isNull {
+		panic(ErrNullValue)
+	}
+	i64, err := parseInt64(c.currentDataFields[index].value)
+	if err != nil {
+		return -1, err
+	}
+	return safeConvert[int64, int](i64)
+}
+
+func (c *Conn) FieldBool(index int) (bool, error) {
+	if index < 0 || index >= len(c.CurrentFields) {
+		panic(errInvalidResultRowIndex)
+	}
+	if c.currentDataFields[index].isNull {
+		panic(ErrNullValue)
+	}
+
+	value := c.currentDataFields[index].value
+	switch string(value) { // does not allocate
+	case "f":
+		return false, nil
+	case "t":
+		return true, nil
+	default:
+		return false, errInvalidColumnType
+	}
 }
 
 func (c *Conn) CloseQuery() error {

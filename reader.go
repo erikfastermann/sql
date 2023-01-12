@@ -369,13 +369,13 @@ func (r *reader) parameterDescription() error {
 		return err
 	}
 
-	r.c.currentParameterOids = r.c.currentParameterOids[:0]
+	r.c.CurrentParameterOids = r.c.CurrentParameterOids[:0]
 	for i := 0; i < parameterLength; i++ {
 		oid, err := r.readInt32()
 		if err != nil {
 			return err
 		}
-		r.c.currentParameterOids = append(r.c.currentParameterOids, oid)
+		r.c.CurrentParameterOids = append(r.c.CurrentParameterOids, oid)
 	}
 
 	return nil
@@ -393,7 +393,7 @@ func (r *reader) rowDescription() error {
 		return err
 	}
 
-	r.c.currentFields = r.c.currentFields[:0]
+	r.c.CurrentFields = r.c.CurrentFields[:0]
 	r.c.currentFieldNames = r.c.currentFieldNames[:0]
 	for i := 0; i < fieldsLength; i++ {
 		name, err := r.readString()
@@ -428,22 +428,22 @@ func (r *reader) rowDescription() error {
 		r.c.currentFieldNames = append(r.c.currentFieldNames, name...)
 		// if currentFieldNames grows during append, field.name references an old buffer
 		storedName := r.c.currentFieldNames[len(r.c.currentFieldNames)-len(name):]
-		f := field{
-			name:                       storedName,
-			maybeTableOid:              maybeTableOid,
-			maybeColumnAttributeNumber: maybeColumnAttributeNumber,
-			typeOid:                    typeOid,
-			typeSize:                   typeSize,
-			typeModifier:               typeModifier,
-			formatCode:                 formatCode,
+		f := Field{
+			Name:                       storedName,
+			MaybeTableOid:              maybeTableOid,
+			MaybeColumnAttributeNumber: maybeColumnAttributeNumber,
+			TypeOid:                    typeOid,
+			TypeSize:                   typeSize,
+			TypeModifier:               typeModifier,
+			FormatCode:                 formatCode,
 		}
-		r.c.currentFields = append(r.c.currentFields, f)
+		r.c.CurrentFields = append(r.c.CurrentFields, f)
 	}
 
-	if cap(r.c.currentDataFields) < cap(r.c.currentFields) {
-		r.c.currentDataFields = make([]dataField, len(r.c.currentFields), cap(r.c.currentFields))
+	if cap(r.c.currentDataFields) < cap(r.c.CurrentFields) {
+		r.c.currentDataFields = make([]dataField, len(r.c.CurrentFields), cap(r.c.CurrentFields))
 	} else {
-		r.c.currentDataFields = r.c.currentDataFields[:len(r.c.currentFields)]
+		r.c.currentDataFields = r.c.currentDataFields[:len(r.c.CurrentFields)]
 	}
 	return nil
 }
@@ -511,60 +511,74 @@ func (r *commandTagReader) readSegment() (segment []byte, err error) {
 	return segment, nil
 }
 
-func parseUint64(b []byte) (uint64, error) {
-	n := uint64(0)
-	for _, ch := range b {
+func parseInt64(b []byte) (int64, error) {
+	n := int64(0)
+	if len(b) == 0 {
+		return -1, errors.New("empty number string")
+	}
+	isNegative := b[0] == '-'
+
+	rangeBytes := b
+	if isNegative {
+		rangeBytes = b[1:]
+	}
+	for _, ch := range rangeBytes {
 		if ch < '0' || ch > '9' {
-			return 0, fmt.Errorf("invalid number %q", b)
+			return -1, fmt.Errorf("invalid number %q", b)
 		}
 
 		lastN := n
 		n *= 10
-		d := uint64(ch - '0')
-		n += uint64(d)
-		if n < lastN {
-			return 0, fmt.Errorf("number %q overflows uint64", b)
+		overflowAfterMultiply := n < lastN
+		n += int64(ch - '0')
+		if overflowAfterMultiply || n < lastN {
+			return -1, fmt.Errorf("number %q overflows int64", b)
 		}
+	}
+
+	if isNegative {
+		// cannot represent math.MinInt64
+		return n * -1, nil
 	}
 	return n, nil
 }
 
-type commandType int
+type CommandType int
 
 const (
-	commandUnknown commandType = iota
-	commandInsert
-	commandDelete
-	commandUpdate
-	commandSelect
-	commandMove
-	commandFetch
-	commandCopy
+	CommandUnknown CommandType = iota
+	CommandInsert
+	CommandDelete
+	CommandUpdate
+	CommandSelect
+	CommandMove
+	CommandFetch
+	CommandCopy
 	commandLength
 )
 
 var commandTypes = []string{
-	commandUnknown: "UNKNOWN",
-	commandInsert:  "INSERT",
-	commandDelete:  "DELETE",
-	commandUpdate:  "UPDATE",
-	commandSelect:  "SELECT",
-	commandMove:    "MOVE",
-	commandFetch:   "FETCH",
-	commandCopy:    "COPY",
+	CommandUnknown: "UNKNOWN",
+	CommandInsert:  "INSERT",
+	CommandDelete:  "DELETE",
+	CommandUpdate:  "UPDATE",
+	CommandSelect:  "SELECT",
+	CommandMove:    "MOVE",
+	CommandFetch:   "FETCH",
+	CommandCopy:    "COPY",
 }
 
-var commandTypesMapping = make(map[string]commandType)
+var commandTypesMapping = make(map[string]CommandType)
 
 func init() {
 	for command, s := range commandTypes {
-		commandTypesMapping[s] = commandType(command)
+		commandTypesMapping[s] = CommandType(command)
 	}
 }
 
-func (c commandType) String() string {
+func (c CommandType) String() string {
 	if c < 0 || c >= commandLength {
-		return commandTypes[commandUnknown]
+		return commandTypes[CommandUnknown]
 	}
 	return commandTypes[c]
 }
@@ -591,7 +605,7 @@ func (r *reader) commandComplete() error {
 		return fmt.Errorf("unknown command type %q", commandRaw)
 	}
 
-	if command == commandInsert {
+	if command == CommandInsert {
 		// skip unused oid field
 		if _, err := cr.readSegment(); err != nil {
 			return err
@@ -602,12 +616,12 @@ func (r *reader) commandComplete() error {
 	if err != nil {
 		return err
 	}
-	rows, err := parseUint64(rowsRaw)
+	rows, err := parseInt64(rowsRaw)
 	if err != nil {
 		return err
 	}
 
-	r.c.lastCommand, r.c.lastRowCount = command, rows
+	r.c.LastCommand, r.c.LastRowCount = command, rows
 	return nil
 }
 

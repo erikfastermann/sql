@@ -9,15 +9,6 @@ import (
 
 // TODO: maybe rename usages of kind to type
 
-const (
-	timeout           = 5 * time.Second
-	postgresAddr      = ":5432"
-	postgresUser      = "erik"
-	postgresDb        = "data"
-	postgresPassword  = "unsafepassword"
-	postgresTestQuery = "select table_id, action from events where info = $1"
-)
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -26,7 +17,7 @@ func main() {
 }
 
 func run() error {
-	c, err := Connect()
+	c, err := Connect(":5432", "erik", "unsafepassword", "data")
 	if err != nil {
 		return err
 	}
@@ -38,12 +29,19 @@ func run() error {
 	return nil
 }
 
+func check2[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 func runConn(c *Conn) error {
-	if err := c.GetQueryMetadata(postgresTestQuery); err != nil {
+	if err := c.GetQueryMetadata("select table_id, action from events where info = $1"); err != nil {
 		return err
 	}
-	fmt.Printf("%+v\n", c.currentParameterOids)
-	fmt.Printf("%+v\n", c.currentFields)
+	fmt.Printf("%+v\n", c.CurrentParameterOids)
+	fmt.Printf("%+v\n", c.CurrentFields)
 
 	if err := c.GetQueryMetadata("invalid query"); err != nil {
 		fmt.Println(err)
@@ -54,18 +52,18 @@ func runConn(c *Conn) error {
 	if err := c.RunQuery(query); err != nil {
 		return err
 	}
-	fmt.Printf("\n%+v\n", c.currentFields)
 	for c.NextRow() {
-		for i, f := range c.currentDataFields {
-			fmt.Printf("%d: null?: %t --- %q\n", i, f.isNull, f.value)
-		}
+		attrelid := check2(c.FieldInt(0))
+		attnum := check2(c.FieldInt(1))
+		attname := c.FieldBorrowRawBytes(2)
+		attnotnull := check2(c.FieldBool(3))
+		fmt.Printf("%d - %d (notnull? %t): %s\n", attrelid, attnum, attnotnull, attname)
 	}
 	if err := c.CloseQuery(); err != nil {
 		return err
 	}
 	fmt.Println(time.Since(start))
-
-	fmt.Println(c.lastCommand, c.lastRowCount)
+	fmt.Println(c.LastCommand, c.LastRowCount)
 
 	return nil
 }
