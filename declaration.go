@@ -69,7 +69,7 @@ func (r resultCount) String() string {
 type declaration struct {
 	startLineIndex int
 	// blank line or last line with data
-	endLineIndex int
+	endLineIndex int // inclusive
 	header       []byte
 
 	// the following fields are set by calling parse

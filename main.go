@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"unicode"
 
 	"github.com/erikfastermann/sql/postgres"
 	"github.com/erikfastermann/sql/util"
@@ -17,7 +21,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -177,7 +181,7 @@ func (b *builder) run() error {
 	}
 	for _, sqlFile := range b.config.SQLFiles {
 		if err := b.processFile(sqlFile); err != nil {
-			return err
+			return fmt.Errorf("%s: %w", sqlFile, err)
 		}
 	}
 	return nil
@@ -191,64 +195,127 @@ func (b *builder) processFile(path string) error {
 		return err
 	}
 
-	for _, decl := range b.parser.declarations {
-		// TODO: print error location
-
-		if err := decl.parse(&b.parser); err != nil {
-			return err
-		}
-
-		// TODO: use row description?
-		_, err := b.conn.GetQueryMetadata(decl.body)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(decl.String())
-		fmt.Println("---")
-
-		for _, f := range b.conn.CurrentFields {
-			if f.MaybeTableOid != 0 {
-				relName, ok := b.relations[f.MaybeTableOid]
-				if !ok {
-					panic("internal error")
-				}
-				key := pgAttributeKey{
-					relid: f.MaybeTableOid,
-					num:   f.MaybeColumnAttributeNumber,
-				}
-				attr, ok := b.attributes[key]
-				if !ok {
-					panic("internal error")
-				}
-
-				fmt.Printf("%q.%q (not null? %t)\n", relName, attr.name, attr.notNull)
+	for i := range b.parser.declarations {
+		decl := &b.parser.declarations[i]
+		if err := b.processDeclaration(decl); err != nil {
+			if errorDetail, ok := b.formatError(decl, err); ok {
+				return fmt.Errorf(
+					"line %d-%d: %w\n%s",
+					decl.startLineIndex+1,
+					decl.endLineIndex+1,
+					err,
+					errorDetail,
+				)
 			}
-			fmt.Printf("%q\n", f.Name)
-			typ, ok := b.config.PostgresOidToGoType[f.TypeOid]
-			if !ok {
-				// TODO:
-				// maybe lookup oid in db for better error message
-				// or create copy paste config diff
-				return fmt.Errorf("unknown type oid %d", f.TypeOid)
-			}
-			fmt.Printf("%+v\n", typ)
-			fmt.Println("---")
+			return fmt.Errorf(
+				"line %d-%d: %w",
+				decl.startLineIndex+1,
+				decl.endLineIndex+1,
+				err,
+			)
 		}
-
-		for _, oid := range b.conn.CurrentParameterOids {
-			typ, ok := b.config.PostgresOidToGoType[oid]
-			if !ok {
-				// TODO:
-				// maybe lookup oid in db for better error message
-				// or create copy paste config diff
-				return fmt.Errorf("unknown type oid %d", oid)
-			}
-			fmt.Printf("%+v\n", typ)
-		}
-
-		fmt.Println("-------------")
 	}
 
 	return nil
+}
+
+func (b *builder) processDeclaration(decl *declaration) error {
+	if err := decl.parse(&b.parser); err != nil {
+		return err
+	}
+
+	// TODO: use row description?
+	_, err := b.conn.GetQueryMetadata(decl.body)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(decl.String())
+	fmt.Println("---")
+
+	for _, f := range b.conn.CurrentFields {
+		if f.MaybeTableOid != 0 {
+			relName, ok := b.relations[f.MaybeTableOid]
+			if !ok {
+				panic("internal error")
+			}
+			key := pgAttributeKey{
+				relid: f.MaybeTableOid,
+				num:   f.MaybeColumnAttributeNumber,
+			}
+			attr, ok := b.attributes[key]
+			if !ok {
+				panic("internal error")
+			}
+
+			fmt.Printf("%q.%q (not null? %t)\n", relName, attr.name, attr.notNull)
+		}
+		fmt.Printf("%q\n", f.Name)
+		typ, ok := b.config.PostgresOidToGoType[f.TypeOid]
+		if !ok {
+			// TODO:
+			// maybe lookup oid in db for better error message
+			// or create copy paste config diff
+			return fmt.Errorf("unknown type oid %d", f.TypeOid)
+		}
+		fmt.Printf("%+v\n", typ)
+		fmt.Println("---")
+	}
+
+	for _, oid := range b.conn.CurrentParameterOids {
+		typ, ok := b.config.PostgresOidToGoType[oid]
+		if !ok {
+			// TODO:
+			// maybe lookup oid in db for better error message
+			// or create copy paste config diff
+			return fmt.Errorf("unknown type oid %d", oid)
+		}
+		fmt.Printf("%+v\n", typ)
+	}
+
+	fmt.Println("-------------")
+
+	return nil
+}
+
+func (b *builder) formatError(decl *declaration, err error) (string, bool) {
+	// assumes UTF-8, does not work with characters larger than a single rune
+
+	var postgresError *postgres.Error
+	if !errors.As(err, &postgresError) {
+		return "", false
+	}
+	if postgresError.Position == 0 {
+		return "", false
+	}
+	remainingCharacters := postgresError.Position
+	for i := decl.startLineIndex + 1; i <= decl.endLineIndex; i++ {
+		line := b.parser.lineAt(i)
+		remainingCharactersLine := remainingCharacters
+		for range string(line) {
+			remainingCharacters--
+			if remainingCharacters <= 0 {
+				return formatErrorLine(line, i, remainingCharactersLine-1), true
+			}
+		}
+	}
+	return "", false
+}
+
+func formatErrorLine(line []byte, lineIndex, errorPosition int) string {
+	var b strings.Builder
+	lineNumber := strconv.Itoa(lineIndex + 1)
+	b.WriteString(lineNumber)
+	b.WriteString(" | ")
+	b.Write(bytes.TrimRightFunc(line, unicode.IsSpace))
+	b.WriteByte('\n')
+	for j := 0; j < len(lineNumber); j++ {
+		b.WriteByte(' ')
+	}
+	b.WriteString(" | ")
+	for j := 0; j < errorPosition; j++ {
+		b.WriteByte(' ')
+	}
+	b.WriteByte('^')
+	return b.String()
 }

@@ -234,7 +234,7 @@ func (c *Conn) sync() error {
 	}
 	for {
 		if err := c.consumeSync(); err != nil {
-			if pqErr := (*postgresError)(nil); errors.As(err, &pqErr) {
+			if pqErr := (*Error)(nil); errors.As(err, &pqErr) {
 				// ignore postgres errors when syncing
 				continue
 			}

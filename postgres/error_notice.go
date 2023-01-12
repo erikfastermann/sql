@@ -1,167 +1,120 @@
 package postgres
 
-import "strings"
+import (
+	"github.com/erikfastermann/sql/util"
+)
 
-type additionalErrorAndNoticeField struct {
-	identifier byte
-	value      string
+type AdditionalErrorAndNoticeField struct {
+	Identifier byte
+	Value      string
 }
 
 // See https://www.postgresql.org/docs/current/protocol-error-fields.html
-type errorAndNoticeFields struct {
-	severityLocalized string
-	severity          string
-	sqlstateCode      string
-	message           string
-	messageDetailed   string
-	hint              string
-	position          string
-	positionInternal  string
-	queryInternal     string
-	where             string
-	schemaName        string
-	tableName         string
-	columnName        string
-	typeName          string
-	constraintName    string
-	file              string
-	line              string
-	routine           string
+type ErrorAndNoticeFields struct {
+	SeverityLocalized string
+	Severity          string
+	SqlstateCode      string
+	Message           string
+	MessageDetailed   string
+	Hint              string
+	Position          int // 0 == not set
+	PositionInternal  int // 0 == not set
+	QueryInternal     string
+	Where             string
+	SchemaName        string
+	TableName         string
+	ColumnName        string
+	TypeName          string
+	ConstraintName    string
+	File              string
+	Line              string
+	Routine           string
 
-	additional []additionalErrorAndNoticeField
+	Additional []AdditionalErrorAndNoticeField
 }
 
-func (e *errorAndNoticeFields) assignField(typ byte, value string) {
+func (e *ErrorAndNoticeFields) assignField(typ byte, value []byte) {
+	var positionRef *int
+	switch typ {
+	case 'P':
+		positionRef = &e.Position
+	case 'p':
+		positionRef = &e.PositionInternal
+	}
+	if positionRef != nil {
+		position64, err := util.ParseInt64(value)
+		if err != nil {
+			e.Additional = append(e.Additional, AdditionalErrorAndNoticeField{
+				Identifier: typ,
+				Value:      string(value),
+			})
+			return
+		}
+		position, err := util.SafeConvert[int64, int](position64)
+		if err != nil {
+			e.Additional = append(e.Additional, AdditionalErrorAndNoticeField{
+				Identifier: typ,
+				Value:      string(value),
+			})
+			return
+		}
+		e.Position = position
+	}
+
+	copied := string(value)
 	switch typ {
 	case 'S':
-		e.severityLocalized = value
+		e.SeverityLocalized = copied
 	case 'V':
-		e.severity = value
+		e.Severity = copied
 	case 'C':
-		e.sqlstateCode = value
+		e.SqlstateCode = copied
 	case 'M':
-		e.message = value
+		e.Message = copied
 	case 'D':
-		e.messageDetailed = value
+		e.MessageDetailed = copied
 	case 'H':
-		e.hint = value
-	case 'P':
-		e.position = value
-	case 'p':
-		e.positionInternal = value
+		e.Hint = copied
 	case 'q':
-		e.queryInternal = value
+		e.QueryInternal = copied
 	case 'W':
-		e.where = value
+		e.Where = copied
 	case 's':
-		e.schemaName = value
+		e.SchemaName = copied
 	case 't':
-		e.tableName = value
+		e.TableName = copied
 	case 'c':
-		e.columnName = value
+		e.ColumnName = copied
 	case 'd':
-		e.typeName = value
+		e.TypeName = copied
 	case 'n':
-		e.constraintName = value
+		e.ConstraintName = copied
 	case 'F':
-		e.file = value
+		e.File = copied
 	case 'L':
-		e.line = value
+		e.Line = copied
 	case 'R':
-		e.routine = value
+		e.Routine = copied
 	default:
-		e.additional = append(e.additional, additionalErrorAndNoticeField{
-			identifier: typ,
-			value:      value,
+		e.Additional = append(e.Additional, AdditionalErrorAndNoticeField{
+			Identifier: typ,
+			Value:      copied,
 		})
 	}
 }
 
-func (e *errorAndNoticeFields) String() string {
-	var w twoPassWriter
-	e.writeTo(&w)
-	w.b.Grow(w.l)
-	e.writeTo(&w)
-	return w.b.String()
+func (e *ErrorAndNoticeFields) String() string {
+	return e.Message
 }
 
-func (e *errorAndNoticeFields) writeTo(w *twoPassWriter) {
-	fieldMapping := [...]struct {
-		name  string
-		value string
-	}{
-		{"Localized Severity", e.severityLocalized},
-		{"Severity", e.severity},
-		{"SQL State Code", e.sqlstateCode},
-		{"Message", e.message},
-		{"MessageDetailed", e.messageDetailed},
-		{"Hint", e.hint},
-		{"Position", e.position},
-		{"Internal Position", e.positionInternal},
-		{"Internal Query", e.queryInternal},
-		{"Where", e.where},
-		{"Schema Name", e.schemaName},
-		{"Table Name", e.tableName},
-		{"Column Name", e.columnName},
-		{"Type Name", e.typeName},
-		{"Constraint Name", e.constraintName},
-		{"File", e.file},
-		{"Line", e.line},
-		{"Routine", e.routine},
-	}
-
-	commaNeeded := false
-
-	for _, f := range fieldMapping {
-		if f.value != "" {
-			if commaNeeded {
-				w.writeString(", ")
-			}
-			w.writeString(f.name)
-			w.writeString(": ")
-			w.writeString(f.value)
-			commaNeeded = true
-		}
-	}
-
-	for _, f := range e.additional {
-		if commaNeeded {
-			w.writeString(", ")
-		}
-		w.writeByte(f.identifier)
-		w.writeString(": ")
-		w.writeString(f.value)
-		commaNeeded = true
-	}
+type Error struct {
+	ErrorAndNoticeFields
 }
 
-type postgresError struct {
-	errorAndNoticeFields
-}
-
-func (e *postgresError) Error() string {
+func (e *Error) Error() string {
 	return e.String()
 }
 
 type notice struct {
-	errorAndNoticeFields
-}
-
-type twoPassWriter struct {
-	l int
-	b strings.Builder
-}
-
-func (w *twoPassWriter) writeString(s string) {
-	if w.b.Cap() != 0 {
-		w.b.WriteString(s)
-	}
-	w.l += len(s)
-}
-
-func (w *twoPassWriter) writeByte(b byte) {
-	if w.b.Cap() != 0 {
-		w.b.WriteByte(b)
-	}
-	w.l += 1
+	ErrorAndNoticeFields
 }

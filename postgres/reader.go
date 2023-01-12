@@ -269,7 +269,7 @@ func (r *reader) authenticationSASLFinal() ([]byte, error) {
 	return saslData, nil
 }
 
-func (r *reader) errorAndNoticeResponse(out *errorAndNoticeFields) error {
+func (r *reader) errorAndNoticeResponse(out *ErrorAndNoticeFields) error {
 	if _, err := r.readInt32(); err != nil {
 		return err
 	}
@@ -286,16 +286,16 @@ func (r *reader) errorAndNoticeResponse(out *errorAndNoticeFields) error {
 		if err != nil {
 			return err
 		}
-		out.assignField(typ, string(value))
+		out.assignField(typ, value)
 	}
 }
 
-func (r *reader) errorResponse() (*postgresError, error) {
+func (r *reader) errorResponse() (*Error, error) {
 	if err := r.expectKind('E'); err != nil {
 		return nil, err
 	}
-	var errPq postgresError
-	if err := r.errorAndNoticeResponse(&errPq.errorAndNoticeFields); err != nil {
+	var errPq Error
+	if err := r.errorAndNoticeResponse(&errPq.ErrorAndNoticeFields); err != nil {
 		return nil, err
 	}
 	return &errPq, nil
@@ -306,7 +306,7 @@ func (r *reader) noticeReponse() (*notice, error) {
 		return nil, err
 	}
 	var n notice
-	if err := r.errorAndNoticeResponse(&n.errorAndNoticeFields); err != nil {
+	if err := r.errorAndNoticeResponse(&n.ErrorAndNoticeFields); err != nil {
 		return nil, err
 	}
 	return &n, nil

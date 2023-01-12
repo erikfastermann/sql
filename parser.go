@@ -60,17 +60,17 @@ func (p *parser) lineCount() int {
 }
 
 func (p *parser) lineAt(index int) []byte {
-	from, to := p.linaAtRange(index)
+	from, to := p.lineAtRange(index)
 	return p.b.Bytes()[from:to]
 }
 
-func (p *parser) lineSlice(from, to int) []byte {
-	sliceFrom, _ := p.linaAtRange(from)
-	_, sliceTo := p.linaAtRange(to)
+func (p *parser) lineSlice(from, toInclusive int) []byte {
+	sliceFrom, _ := p.lineAtRange(from)
+	_, sliceTo := p.lineAtRange(toInclusive)
 	return p.b.Bytes()[sliceFrom:sliceTo]
 }
 
-func (p *parser) linaAtRange(index int) (from, to int) {
+func (p *parser) lineAtRange(index int) (from, to int) {
 	if index < 0 || index > len(p.newlineOffsets) {
 		panic(errLineIndexOutOfBounds)
 	}
