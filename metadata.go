@@ -14,4 +14,6 @@ type field struct {
 	typeOid      int
 	typeSize     int
 	typeModifier int
+
+	formatCode int
 }

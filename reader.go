@@ -88,6 +88,16 @@ func (r *reader) readMessage() error {
 	}
 }
 
+func (r *reader) peekKind() (byte, error) {
+	if len(r.b) != len(r.originalBuffer) {
+		panic("called peekKind after read")
+	}
+	if len(r.b) < 1 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return r.b[0], nil
+}
+
 func (r *reader) expectKind(expected byte) error {
 	if len(r.b) < 1 {
 		return io.ErrUnexpectedEOF
@@ -138,6 +148,20 @@ func (r *reader) readString() ([]byte, error) {
 	s := r.b[:i]
 	r.b = r.b[i+1:]
 	return s, nil
+}
+
+var errNegativeByteReadCount = errors.New("negative byte read count")
+
+func (r *reader) readBytes(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, errNegativeByteReadCount
+	}
+	if len(r.b) < n {
+		return nil, io.ErrUnexpectedEOF
+	}
+	b := r.b[:n]
+	r.b = r.b[n:]
+	return b, nil
 }
 
 func nullByteIndex(b []byte) (int, error) {
@@ -322,8 +346,8 @@ func (r *reader) rowDescription() ([]field, error) {
 		if err != nil {
 			return nil, err
 		}
-		// format code
-		if _, err := r.readInt16(); err != nil {
+		formatCode, err := r.readInt16()
+		if err != nil {
 			return nil, err
 		}
 
@@ -334,10 +358,172 @@ func (r *reader) rowDescription() ([]field, error) {
 			typeOid:                    typeOid,
 			typeSize:                   typeSize,
 			typeModifier:               typeModifier,
+			formatCode:                 formatCode,
 		}
 	}
 
 	return fields, nil
+}
+
+type dataField struct {
+	isNull bool
+	value  []byte
+}
+
+func (r *reader) dataRow(out []dataField) error {
+	if err := r.expectKind('D'); err != nil {
+		return err
+	}
+	if _, err := r.readInt32(); err != nil {
+		return err
+	}
+	columnsLength, err := r.readInt16()
+	if err != nil {
+		return err
+	}
+	if columnsLength != len(out) {
+		return fmt.Errorf("expected %d columns, got %d", len(out), columnsLength)
+	}
+
+	for i := range out {
+		valueLength, err := r.readInt32()
+		if err != nil {
+			return err
+		}
+		if valueLength < 0 {
+			out[i].isNull = true
+			out[i].value = nil
+		} else {
+			out[i].isNull = false
+			value, err := r.readBytes(valueLength)
+			if err != nil {
+				return err
+			}
+			out[i].value = value
+		}
+	}
+
+	return nil
+}
+
+type commandTagReader struct {
+	b []byte
+}
+
+var errMalformedCommandTag = errors.New("malformed command tag")
+
+func (r *commandTagReader) readSegment() (segment []byte, err error) {
+	if len(r.b) == 0 {
+		return nil, errMalformedCommandTag
+	}
+	segmentLength := bytes.IndexByte(r.b, ' ')
+	if segmentLength < 0 {
+		segment := r.b
+		r.b = nil
+		return segment, nil
+	}
+	segment = r.b[:segmentLength]
+	r.b = r.b[segmentLength+1:]
+	return segment, nil
+}
+
+func parseUint64(b []byte) (uint64, error) {
+	n := uint64(0)
+	for _, ch := range b {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("invalid number %q", b)
+		}
+
+		lastN := n
+		n *= 10
+		d := uint64(ch - '0')
+		n += uint64(d)
+		if n < lastN {
+			return 0, fmt.Errorf("number %q overflows uint64", b)
+		}
+	}
+	return n, nil
+}
+
+type commandType int
+
+const (
+	commandUnknown commandType = iota
+	commandInsert
+	commandDelete
+	commandUpdate
+	commandSelect
+	commandMove
+	commandFetch
+	commandCopy
+	commandLength
+)
+
+var commandTypes = []string{
+	commandUnknown: "UNKNOWN",
+	commandInsert:  "INSERT",
+	commandDelete:  "DELETE",
+	commandUpdate:  "UPDATE",
+	commandSelect:  "SELECT",
+	commandMove:    "MOVE",
+	commandFetch:   "FETCH",
+	commandCopy:    "COPY",
+}
+
+var commandTypesMapping = make(map[string]commandType)
+
+func init() {
+	for command, s := range commandTypes {
+		commandTypesMapping[s] = commandType(command)
+	}
+}
+
+func (c commandType) String() string {
+	if c < 0 || c >= commandLength {
+		return commandTypes[commandUnknown]
+	}
+	return commandTypes[c]
+}
+
+func (r *reader) commandComplete() (command commandType, rows uint64, err error) {
+	if err := r.expectKind('C'); err != nil {
+		return commandUnknown, 0, err
+	}
+	if _, err := r.readInt32(); err != nil {
+		return commandUnknown, 0, err
+	}
+
+	commandTag, err := r.readString()
+	if err != nil {
+		return commandUnknown, 0, err
+	}
+	cr := commandTagReader{commandTag}
+	commandRaw, err := cr.readSegment()
+	if err != nil {
+		return commandUnknown, 0, err
+	}
+	command, ok := commandTypesMapping[string(commandRaw)]
+	if !ok {
+		return commandUnknown, 0, fmt.Errorf("unknown command type %q", commandRaw)
+	}
+
+	if command == commandInsert {
+		// skip unused oid field
+		if _, err := cr.readSegment(); err != nil {
+			return commandUnknown, 0, err
+		}
+	}
+
+	rowsRaw, err := cr.readSegment()
+	if err != nil {
+		return commandUnknown, 0, err
+	}
+	rows, err = parseUint64(rowsRaw)
+	if err != nil {
+		return commandUnknown, 0, err
+	}
+
+	return command, rows, nil
 }
 
 type errorUnexpectedKind struct {

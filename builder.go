@@ -168,3 +168,9 @@ func (b *builder) terminate() {
 		panic(err)
 	}
 }
+
+func (b *builder) query(query string) error {
+	b.newMessage('Q')
+	b.appendString(query)
+	return b.finalizeMessage()
+}

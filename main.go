@@ -48,5 +48,5 @@ func runConn(c *conn) error {
 	}
 	fmt.Printf("%+v\n", meta)
 
-	return nil
+	return c.query("select attrelid, attnum, attname, attnotnull from pg_attribute")
 }

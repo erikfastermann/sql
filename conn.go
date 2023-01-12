@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"time"
 )
@@ -161,4 +162,50 @@ func (c *conn) getQueryMetadata(query string) (*metadata, error) {
 		fields:        fields,
 	}
 	return m, nil
+}
+
+func (c *conn) query(query string) error {
+	c.b.reset()
+	if err := c.b.query(query); err != nil {
+		return err
+	}
+	if err := c.writeMessage(); err != nil {
+		return err
+	}
+
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	fields, err := c.r.rowDescription()
+	if err != nil {
+		return err
+	}
+
+	row := make([]dataField, len(fields))
+	for {
+		if err := c.r.readMessage(); err != nil {
+			return err
+		}
+		kind, err := c.r.peekKind()
+		if err != nil {
+			return err
+		}
+		if kind == 'C' {
+			break
+		}
+		if err := c.r.dataRow(row); err != nil {
+			return err
+		}
+		for i, f := range row {
+			fmt.Printf("%d: null?: %t --- %q\n", i, f.isNull, f.value)
+		}
+	}
+
+	command, rows, err := c.r.commandComplete()
+	if err != nil {
+		return err
+	}
+	fmt.Println(command.String(), rows)
+
+	return c.readyForQuery()
 }
