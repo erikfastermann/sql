@@ -62,7 +62,7 @@ for column nullability options see original idea
 select p.id, p.name, friend.name
 from person as /*blub*/p
 join person as friend on friend.id = p.friend_id
-where p.id = ?;
+where p.id = $1;
 
 /*
 type NameAndFriendName struct {

@@ -167,10 +167,10 @@ func (b *builder) saslResponse(data string) error {
 	return b.finalizeMessage()
 }
 
-func (b *builder) parse(preparedStatement, query string) error {
+func (b *builder) parse(preparedStatement string, query []byte) error {
 	b.newMessage('P')
 	b.appendString(preparedStatement)
-	b.appendString(query)
+	b.appendBytes(query)
 	b.appendInt16(0) // specified parameter types
 	return b.finalizeMessage()
 }

@@ -16,7 +16,7 @@ func TestLineAt(t *testing.T) {
 		{"foo\n\nbar", []string{"foo\n", "\n", "bar"}},
 	}
 	for _, test := range cases {
-		var h handler
+		var h parser
 		_, _ = h.b.WriteString(test.input)
 		h.calculateNewlineOffsets()
 		lines := h.lineCount()

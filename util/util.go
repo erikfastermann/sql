@@ -53,3 +53,10 @@ func ParseInt64(b []byte) (int64, error) {
 	}
 	return n, nil
 }
+
+func Check2[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}

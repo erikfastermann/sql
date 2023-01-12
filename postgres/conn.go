@@ -266,7 +266,7 @@ func (c *Conn) consumeSync() error {
 	}
 }
 
-func (c *Conn) GetQueryMetadata(query string) (withRowDescription bool, err error) {
+func (c *Conn) GetQueryMetadata(query []byte) (withRowDescription bool, err error) {
 	if err := c.sync(); err != nil {
 		return false, err
 	}

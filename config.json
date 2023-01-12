@@ -1,0 +1,43 @@
+{
+    "Address": ":5432",
+    "Username": "erik",
+    "Password": "unsafepassword",
+    "Database": "data",
+    "SQLFiles": [
+        "playground.sql"
+    ],
+    "PostgresOidToGoType": {
+        "16": {
+            "Postgres": "bool",
+            "Go": "bool"
+        },
+        "17": {
+            "Postgres": "bytea",
+            "Go": "[]byte"
+        },
+        "18": {
+            "Postgres": "char",
+            "Go": "rune"
+        },
+        "19": {
+            "Postgres": "name",
+            "Go": "[]byte"
+        },
+        "20": {
+            "Postgres": "int8",
+            "Go": "int64"
+        },
+        "21": {
+            "Postgres": "int2",
+            "Go": "int16"
+        },
+        "23": {
+            "Postgres": "int4",
+            "Go": "int32"
+        },
+        "25": {
+            "Postgres": "text",
+            "Go": "[]byte"
+        }
+    }
+}
