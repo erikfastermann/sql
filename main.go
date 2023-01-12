@@ -1,4 +1,3 @@
-// See https://www.postgresql.org/docs/current/protocol-message-formats.html
 package main
 
 import (
@@ -7,9 +6,16 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/erikfastermann/sql/postgres"
 )
 
-// TODO: maybe rename usages of kind to type
+func check2[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -19,26 +25,12 @@ func main() {
 }
 
 func run() error {
-	c, err := Connect(":5432", "erik", "unsafepassword", "data")
+	c, err := postgres.Connect(":5432", "erik", "unsafepassword", "data")
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 
-	if err := runConn(c); err != nil {
-		return fmt.Errorf("%w (%q)", err, c.r.originalBuffer)
-	}
-	return nil
-}
-
-func check2[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-func runConn(c *Conn) error {
 	if err := c.GetQueryMetadata("select table_id, action from events where info = $1"); err != nil {
 		return err
 	}
@@ -84,6 +76,14 @@ func runConn(c *Conn) error {
 	}
 
 	if err := c.Execute(ddlQuery); err != nil {
+		return err
+	}
+
+	const queryMultilineString = "select attrelid, attnum, attname, attnotnull from pg_attribute where attname = 'foo\nbar'"
+	if err := c.RunQuery(queryMultilineString); err != nil {
+		return err
+	}
+	if err := c.CloseQuery(); err != nil {
 		return err
 	}
 

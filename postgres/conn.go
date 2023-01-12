@@ -1,4 +1,5 @@
-package main
+// See https://www.postgresql.org/docs/current/protocol-message-formats.html
+package postgres
 
 import (
 	"errors"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/xdg-go/scram"
 )
+
+// TODO: maybe rename usages of kind to type
 
 type timeoutConn struct {
 	c       net.Conn
