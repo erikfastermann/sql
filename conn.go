@@ -297,8 +297,19 @@ func (c *Conn) GetQueryMetadata(query string) error {
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
-	if err := c.r.rowDescription(); err != nil {
+	kind, err := c.r.peekKind()
+	if err != nil {
 		return err
+	}
+	if kind == 'n' {
+		if err := c.r.noData(); err != nil {
+			return err
+		}
+		c.CurrentFields = c.CurrentFields[:0]
+	} else {
+		if err := c.r.rowDescription(); err != nil {
+			return err
+		}
 	}
 
 	return c.sync()

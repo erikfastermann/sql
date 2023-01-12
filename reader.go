@@ -625,6 +625,14 @@ func (r *reader) commandComplete() error {
 	return nil
 }
 
+func (r *reader) noData() error {
+	if err := r.expectKind('n'); err != nil {
+		return err
+	}
+	_, err := r.readInt32()
+	return err
+}
+
 type errorUnexpectedKind struct {
 	expected byte
 	got      byte

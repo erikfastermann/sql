@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -71,6 +72,14 @@ func runConn(c *Conn) error {
 
 	if err := c.RunQuery(" \n \t "); err != nil {
 		fmt.Println(err)
+	}
+
+	const ddlQuery = "insert into events(table_id, action) values(1, 'insert')"
+	if err := c.GetQueryMetadata(ddlQuery); err != nil {
+		return err
+	}
+	if len(c.CurrentFields) != 0 {
+		return errors.New("non empty row with ddl")
 	}
 
 	return nil
