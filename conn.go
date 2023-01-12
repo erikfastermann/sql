@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"time"
 
@@ -45,16 +46,20 @@ type field struct {
 	formatCode int
 }
 
-type conn struct {
+// TODO: tx support, context support, long timeouts (for queries)
+type Conn struct {
 	c *timeoutConn
 	r *reader
 	b builder
 
-	processId, secretKey int
-
 	txStatus byte
+	// set by public methods after first write
+	needSync bool
+	// set when closed or if an error occurs when syncing (except postgres errors)
+	fatalError error
 
-	parameterStatuses map[string]string
+	processId, secretKey int
+	parameterStatuses    map[string]string
 
 	currentParameterOids []int
 
@@ -69,7 +74,7 @@ type conn struct {
 	lastRowCount      uint64
 }
 
-func connect() (*conn, error) {
+func Connect() (*Conn, error) {
 	cc, err := net.DialTimeout("tcp", postgresAddr, timeout)
 	if err != nil {
 		return nil, err
@@ -79,29 +84,43 @@ func connect() (*conn, error) {
 		timeout: timeout,
 	}
 
-	c := &conn{
+	c := &Conn{
 		c:                 withTimeout,
 		parameterStatuses: make(map[string]string),
 	}
 	c.r = newReader(c, withTimeout)
+
+	if err := c.startup(); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
 	return c, nil
 }
 
-func (c *conn) writeMessage() error {
+func (c *Conn) writeMessage() error {
 	_, err := c.c.Write(c.b.b)
 	return err
 }
 
-func (c *conn) Close() error {
+var errConnClosed = errors.New("connection closed")
+
+func (c *Conn) Close() error {
+	if c.fatalError != nil {
+		return c.fatalError
+	}
+	c.fatalError = errConnClosed
+
 	c.b.reset()
 	c.b.terminate()
-	if err := c.writeMessage(); err != nil {
-		return err
+	writeErr := c.writeMessage()
+	closeErr := c.c.Close()
+	if writeErr != nil {
+		return writeErr
 	}
-	return c.c.Close()
+	return closeErr
 }
 
-func (c *conn) startup() error {
+func (c *Conn) startup() error {
 	c.b.reset()
 	if err := c.b.startup(); err != nil {
 		return err
@@ -141,7 +160,7 @@ func (c *conn) startup() error {
 	return c.r.readyForQuery()
 }
 
-func (c *conn) saslAuthScramSha256() error {
+func (c *Conn) saslAuthScramSha256() error {
 	client, err := scram.SHA256.NewClient(postgresUser, postgresPassword, "")
 	if err != nil {
 		return err
@@ -152,7 +171,6 @@ func (c *conn) saslAuthScramSha256() error {
 	if err != nil {
 		return err
 	}
-	println(initialResponse)
 	c.b.reset()
 	if err := c.b.saslInitialResponseScramSha256(initialResponse); err != nil {
 		return err
@@ -161,7 +179,6 @@ func (c *conn) saslAuthScramSha256() error {
 		return err
 	}
 
-	println("A")
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
@@ -170,12 +187,10 @@ func (c *conn) saslAuthScramSha256() error {
 		return err
 	}
 
-	println(string(serverMsg))
 	secondMsg, err := conv.Step(string(serverMsg))
 	if err != nil {
 		return err
 	}
-	println(secondMsg)
 	c.b.reset()
 	if err := c.b.saslResponse(secondMsg); err != nil {
 		return err
@@ -184,7 +199,6 @@ func (c *conn) saslAuthScramSha256() error {
 		return err
 	}
 
-	println("B")
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
@@ -192,12 +206,10 @@ func (c *conn) saslAuthScramSha256() error {
 	if err != nil {
 		return err
 	}
-	println(string(serverMsg))
 	if _, err := conv.Step(string(serverMsg)); err != nil {
 		return err
 	}
 
-	print("C")
 	if err := c.r.readMessage(); err != nil {
 		return err
 	}
@@ -205,7 +217,52 @@ func (c *conn) saslAuthScramSha256() error {
 	return err
 }
 
-func (c *conn) getQueryMetadata(query string) error {
+func (c *Conn) sync() error {
+	if c.fatalError != nil {
+		return c.fatalError
+	}
+	if !c.needSync {
+		return nil
+	}
+	for {
+		if err := c.consumeSync(); err != nil {
+			if pqErr := (*postgresError)(nil); errors.As(err, &pqErr) {
+				// ignore postgres errors when syncing
+				continue
+			}
+			_ = c.Close()
+			c.fatalError = err
+			return err
+		}
+		c.needSync = false
+		return nil
+	}
+}
+
+func (c *Conn) consumeSync() error {
+	for {
+		if err := c.r.readMessage(); err != nil {
+			return err
+		}
+		kind, err := c.r.peekKind()
+		if err != nil {
+			return err
+		}
+		if kind != 'Z' {
+			continue
+		}
+		if err := c.r.readyForQuery(); err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func (c *Conn) GetQueryMetadata(query string) error {
+	if err := c.sync(); err != nil {
+		return err
+	}
+
 	c.b.reset()
 	if err := c.b.parse("", query); err != nil {
 		return err
@@ -217,6 +274,7 @@ func (c *conn) getQueryMetadata(query string) error {
 	if err := c.writeMessage(); err != nil {
 		return err
 	}
+	c.needSync = true
 
 	if err := c.r.readMessage(); err != nil {
 		return err
@@ -239,17 +297,17 @@ func (c *conn) getQueryMetadata(query string) error {
 		return err
 	}
 
-	if err := c.r.readMessage(); err != nil {
-		return err
-	}
-	return c.r.readyForQuery()
+	return c.sync()
 }
 
-func (c *conn) runQuery(query string) error {
+func (c *Conn) RunQuery(query string) error {
 	// TODO: support DDL / DML
-	// TODO: recover from previous query errors (Sync) (testing required)
 	// TODO: handle empty EmptyQueryResponse, probably just check the string before
 	// TODO: support Extended Query (with binary and pipelining)
+
+	if err := c.sync(); err != nil {
+		return err
+	}
 
 	c.rowIterationDone = false
 	c.lastRowError = nil
@@ -263,6 +321,7 @@ func (c *conn) runQuery(query string) error {
 	if err := c.writeMessage(); err != nil {
 		return err
 	}
+	c.needSync = true
 
 	if err := c.r.readMessage(); err != nil {
 		return err
@@ -270,8 +329,8 @@ func (c *conn) runQuery(query string) error {
 	return c.r.rowDescription()
 }
 
-func (c *conn) nextRow() bool {
-	if c.rowIterationDone || c.lastRowError != nil {
+func (c *Conn) NextRow() bool {
+	if c.fatalError != nil || c.rowIterationDone || c.lastRowError != nil {
 		return false
 	}
 
@@ -295,26 +354,20 @@ func (c *conn) nextRow() bool {
 	return true
 }
 
-func (c *conn) finalizeQuery() error {
+func (c *Conn) CloseQuery() error {
 	if c.lastRowError != nil {
 		return c.lastRowError
 	}
 	if !c.rowIterationDone {
-		for c.nextRow() {
+		for c.NextRow() {
 		}
 		if c.lastRowError != nil {
 			return c.lastRowError
 		}
 	}
 
-	command, rows, err := c.r.commandComplete()
-	if err != nil {
+	if err := c.r.commandComplete(); err != nil {
 		return err
 	}
-	c.lastCommand, c.lastRowCount = command, rows
-
-	if err := c.r.readMessage(); err != nil {
-		return err
-	}
-	return c.r.readyForQuery()
+	return c.sync()
 }

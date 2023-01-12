@@ -12,10 +12,10 @@ import (
 const (
 	timeout           = 5 * time.Second
 	postgresAddr      = ":5432"
-	postgresUser      = "postgres"
-	postgresDb        = "postgres"
-	postgresPassword  = "postgres"
-	postgresTestQuery = "select table_id, action from events where value = $1"
+	postgresUser      = "erik"
+	postgresDb        = "data"
+	postgresPassword  = "unsafepassword"
+	postgresTestQuery = "select table_id, action from events where info = $1"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 }
 
 func run() error {
-	c, err := connect()
+	c, err := Connect()
 	if err != nil {
 		return err
 	}
@@ -38,29 +38,29 @@ func run() error {
 	return nil
 }
 
-func runConn(c *conn) error {
-	if err := c.startup(); err != nil {
-		return err
-	}
-
-	if err := c.getQueryMetadata(postgresTestQuery); err != nil {
+func runConn(c *Conn) error {
+	if err := c.GetQueryMetadata(postgresTestQuery); err != nil {
 		return err
 	}
 	fmt.Printf("%+v\n", c.currentParameterOids)
 	fmt.Printf("%+v\n", c.currentFields)
 
+	if err := c.GetQueryMetadata("invalid query"); err != nil {
+		fmt.Println(err)
+	}
+
 	start := time.Now()
 	const query = "select attrelid, attnum, attname, attnotnull from pg_attribute"
-	if err := c.runQuery(query); err != nil {
+	if err := c.RunQuery(query); err != nil {
 		return err
 	}
 	fmt.Printf("\n%+v\n", c.currentFields)
-	for c.nextRow() {
+	for c.NextRow() {
 		for i, f := range c.currentDataFields {
 			fmt.Printf("%d: null?: %t --- %q\n", i, f.isNull, f.value)
 		}
 	}
-	if err := c.finalizeQuery(); err != nil {
+	if err := c.CloseQuery(); err != nil {
 		return err
 	}
 	fmt.Println(time.Since(start))

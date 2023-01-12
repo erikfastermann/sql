@@ -11,7 +11,7 @@ import (
 )
 
 type reader struct {
-	c *conn
+	c *Conn
 	r *bufio.Reader
 
 	// b and orig reference the buffer of r
@@ -22,7 +22,7 @@ type reader struct {
 
 const readBufferSize = 4096 * 2 * 10
 
-func newReader(c *conn, r io.Reader) *reader {
+func newReader(c *Conn, r io.Reader) *reader {
 	return &reader{c: c, r: bufio.NewReaderSize(r, readBufferSize)}
 }
 
@@ -569,45 +569,46 @@ func (c commandType) String() string {
 	return commandTypes[c]
 }
 
-func (r *reader) commandComplete() (command commandType, rows uint64, err error) {
+func (r *reader) commandComplete() error {
 	if err := r.expectKind('C'); err != nil {
-		return commandUnknown, 0, err
+		return err
 	}
 	if _, err := r.readInt32(); err != nil {
-		return commandUnknown, 0, err
+		return err
 	}
 
 	commandTag, err := r.readString()
 	if err != nil {
-		return commandUnknown, 0, err
+		return err
 	}
 	cr := commandTagReader{commandTag}
 	commandRaw, err := cr.readSegment()
 	if err != nil {
-		return commandUnknown, 0, err
+		return err
 	}
 	command, ok := commandTypesMapping[string(commandRaw)]
 	if !ok {
-		return commandUnknown, 0, fmt.Errorf("unknown command type %q", commandRaw)
+		return fmt.Errorf("unknown command type %q", commandRaw)
 	}
 
 	if command == commandInsert {
 		// skip unused oid field
 		if _, err := cr.readSegment(); err != nil {
-			return commandUnknown, 0, err
+			return err
 		}
 	}
 
 	rowsRaw, err := cr.readSegment()
 	if err != nil {
-		return commandUnknown, 0, err
+		return err
 	}
-	rows, err = parseUint64(rowsRaw)
+	rows, err := parseUint64(rowsRaw)
 	if err != nil {
-		return commandUnknown, 0, err
+		return err
 	}
 
-	return command, rows, nil
+	r.c.lastCommand, r.c.lastRowCount = command, rows
+	return nil
 }
 
 type errorUnexpectedKind struct {
