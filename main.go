@@ -74,12 +74,17 @@ func runConn(c *Conn) error {
 		fmt.Println(err)
 	}
 
-	const ddlQuery = "insert into events(table_id, action) values(1, 'insert')"
+	const ddlQuery = `insert into users(id, name, password_bcrypt)
+		values(nextval('serial_test_id_seq'), nextval('serial_test_id_seq'), 'unsafe')`
 	if err := c.GetQueryMetadata(ddlQuery); err != nil {
 		return err
 	}
 	if len(c.CurrentFields) != 0 {
 		return errors.New("non empty row with ddl")
+	}
+
+	if err := c.Execute(ddlQuery); err != nil {
+		return err
 	}
 
 	return nil

@@ -10,6 +10,8 @@ import (
 	"log"
 )
 
+const debugRead = false
+
 type reader struct {
 	c *Conn
 	r *bufio.Reader
@@ -49,6 +51,10 @@ func (r *reader) readMessage() error {
 		}
 		r.b = b
 		r.originalBuffer = b
+
+		if debugRead {
+			fmt.Printf("%q\n", r.originalBuffer)
+		}
 
 		switch kind {
 		case 'E':

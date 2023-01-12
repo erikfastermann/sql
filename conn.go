@@ -315,11 +315,32 @@ func (c *Conn) GetQueryMetadata(query string) error {
 	return c.sync()
 }
 
-var errBlankQueryString = errors.New("blank query string")
+func (c *Conn) Execute(query string) error {
+	if err := c.queryBase(query); err != nil {
+		return err
+	}
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	if err := c.r.commandComplete(); err != nil {
+		return err
+	}
+	return c.sync()
+}
 
 func (c *Conn) RunQuery(query string) error {
-	// TODO: support DDL / DML
+	if err := c.queryBase(query); err != nil {
+		return err
+	}
+	if err := c.r.readMessage(); err != nil {
+		return err
+	}
+	return c.r.rowDescription() // text format is currently assumed
+}
 
+var errBlankQueryString = errors.New("blank query string")
+
+func (c *Conn) queryBase(query string) error {
 	if err := c.sync(); err != nil {
 		return err
 	}
@@ -341,11 +362,7 @@ func (c *Conn) RunQuery(query string) error {
 		return err
 	}
 	c.needSync = true
-
-	if err := c.r.readMessage(); err != nil {
-		return err
-	}
-	return c.r.rowDescription() // text format is currently assumed
+	return nil
 }
 
 func (c *Conn) NextRow() bool {
