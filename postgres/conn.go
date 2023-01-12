@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erikfastermann/sql/util"
 	"github.com/xdg-go/scram"
 )
 
@@ -433,11 +434,11 @@ func (c *Conn) FieldInt(index int) (int, error) {
 	if c.currentDataFields[index].isNull {
 		panic(ErrNullValue)
 	}
-	i64, err := parseInt64(c.currentDataFields[index].value)
+	i64, err := util.ParseInt64(c.currentDataFields[index].value)
 	if err != nil {
 		return -1, err
 	}
-	return safeConvert[int64, int](i64)
+	return util.SafeConvert[int64, int](i64)
 }
 
 func (c *Conn) FieldBool(index int) (bool, error) {

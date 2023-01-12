@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"strings"
+
+	"github.com/erikfastermann/sql/util"
 )
 
 type builder struct {
@@ -47,7 +49,7 @@ func (b *builder) appendInt16(i int) {
 	if b.firstError != nil {
 		return
 	}
-	i16, err := safeConvert[int, int16](i)
+	i16, err := util.SafeConvert[int, int16](i)
 	if err != nil {
 		b.firstError = err
 		return
@@ -59,7 +61,7 @@ func (b *builder) appendInt32(i int) {
 	if b.firstError != nil {
 		return
 	}
-	i32, err := safeConvert[int, int32](i)
+	i32, err := util.SafeConvert[int, int32](i)
 	if err != nil {
 		b.firstError = err
 		return
@@ -94,7 +96,7 @@ func (b *builder) finalizeMessage() error {
 	if b.firstError != nil {
 		return b.firstError
 	}
-	l, err := safeConvert[int, uint32](len(b.b) - b.lengthOffset)
+	l, err := util.SafeConvert[int, uint32](len(b.b) - b.lengthOffset)
 	if err != nil {
 		b.firstError = err
 		return err

@@ -38,7 +38,7 @@ func run() error {
 		for i := decl.startLineIndex; i <= decl.endLineIndex; i++ {
 			fmt.Printf("%s", h.lineAt(i))
 		}
-		if err := decl.parseHeader(); err != nil {
+		if err := decl.parseHeader(&h.tempBuffer); err != nil {
 			return err
 		}
 		fmt.Printf("%#v\n", decl)

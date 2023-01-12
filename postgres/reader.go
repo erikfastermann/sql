@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+
+	"github.com/erikfastermann/sql/util"
 )
 
 const debugRead = false
@@ -40,7 +42,7 @@ func (r *reader) readMessage() error {
 		}
 		kind := header[0]
 		length := binary.BigEndian.Uint32(header[1:])
-		n, err := safeConvert[int64, int](int64(length) + 1)
+		n, err := util.SafeConvert[int64, int](int64(length) + 1)
 		if err != nil {
 			return err
 		}
@@ -517,38 +519,6 @@ func (r *commandTagReader) readSegment() (segment []byte, err error) {
 	return segment, nil
 }
 
-func parseInt64(b []byte) (int64, error) {
-	n := int64(0)
-	if len(b) == 0 {
-		return -1, errors.New("empty number string")
-	}
-	isNegative := b[0] == '-'
-
-	rangeBytes := b
-	if isNegative {
-		rangeBytes = b[1:]
-	}
-	for _, ch := range rangeBytes {
-		if ch < '0' || ch > '9' {
-			return -1, fmt.Errorf("invalid number %q", b)
-		}
-
-		lastN := n
-		n *= 10
-		overflowAfterMultiply := n < lastN
-		n += int64(ch - '0')
-		if overflowAfterMultiply || n < lastN {
-			return -1, fmt.Errorf("number %q overflows int64", b)
-		}
-	}
-
-	if isNegative {
-		// cannot represent math.MinInt64
-		return n * -1, nil
-	}
-	return n, nil
-}
-
 type CommandType int
 
 const (
@@ -622,7 +592,7 @@ func (r *reader) commandComplete() error {
 	if err != nil {
 		return err
 	}
-	rows, err := parseInt64(rowsRaw)
+	rows, err := util.ParseInt64(rowsRaw)
 	if err != nil {
 		return err
 	}

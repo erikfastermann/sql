@@ -35,9 +35,8 @@ Foo (mode)
 GetFoo -> Foo (mode)
 Foo {...}
 GetFoo -> Foo {...}
--- Table and column names are always quoted with ", double to escape.
--- Some databases have different defaults, but it is the standard.
-GetFoo -> Foo (mode) {1: NULL, "foo"."bar": NOTNULL}
+-- table/column/field name escaping currently not supported
+GetFoo -> Foo (mode) {1: NULL, foo.bar: notnull}
 */
 
 /*
@@ -57,7 +56,7 @@ GetFoo -> Foo?
 for column nullability options see original idea
 */
 
---- GetNameAndFriendName -> NameAndFriendName?
+--- GetNameAndFriendName -> NameAndFriendName? {1: notnull, foo: null, bar: notnull}
 -- or dml (only returns an error),
 -- many (returns an iterator of the type with an error each and a normal error)
 select p.id, p.name, friend.name

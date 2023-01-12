@@ -8,6 +8,8 @@ import (
 	"os"
 	"regexp"
 	"unicode/utf8"
+
+	"github.com/erikfastermann/sql/util"
 )
 
 // TODO: rename to parser
@@ -16,6 +18,8 @@ type handler struct {
 	b              bytes.Buffer
 	newlineOffsets []int
 	declarations   []declaration
+
+	tempBuffer tempBuffer
 }
 
 var errInvalidUtf8 = errors.New("invalid utf8")
@@ -251,6 +255,7 @@ func nextQuoted(remainder []byte, quote byte) (newRemainder []byte, stateChange 
 // TODO:
 //   - dependency tracking
 //   - check valid go identifier
+//   - no duplicate columnOption's
 
 type resultKind int
 
@@ -329,7 +334,7 @@ const (
 	regexpIdentifier          = `(\pL+[\pL\pN]*)`
 	regexpIdentifierWithEdges = `(([#!]?)` + regexpIdentifier + `([\?\+]?))`
 	regexpTwoNames            = "(" + regexpIdentifier + " -> " + regexpIdentifierWithEdges + ")"
-	regexpHeader              = "^" + regexpTwoNames + "|" + regexpIdentifierWithEdges
+	regexpHeader              = "^(" + regexpTwoNames + "|" + regexpIdentifierWithEdges + `)( \{(.*?)\})?$`
 )
 
 var headerMatcher = regexp.MustCompile(regexpHeader)
@@ -348,31 +353,36 @@ var (
 	errResultDirectWithTwoNames = errors.New(
 		"specified result kind as direct with `#`, but used `->` (two names)",
 	)
-	errHeaderExtraContent = errors.New("unexpected extra content in header") // TODO: include string
 )
 
-func (d *declaration) parseHeader() error {
+type tempBuffer struct {
+	split [][]byte
+}
+
+func (d *declaration) parseHeader(t *tempBuffer) error {
 	// TODO: real parser
 
-	match := headerMatcher.FindSubmatch(d.header)
-	if len(match) == 0 {
-		return errInvalidHeader
-	}
-	if len(match) != 11 {
-		panic("internal error")
-	}
-
 	const (
-		reTwoNames             = 1
-		reTwoNamesFuncName     = 2
-		reTwoNamesEdgesStart   = 3
-		reSingleNameEdgesStart = 7
+		reTwoNames             = 2
+		reTwoNamesFuncName     = 3
+		reTwoNamesEdgesStart   = 4
+		reSingleNameEdgesStart = 8
+		reColumnOptions        = 13
+		reMatchLength          = 14
 	)
 	const (
 		rePrefixOffset = 1
 		reNameOffset   = 2
 		reSuffixOffset = 3
 	)
+
+	match := headerMatcher.FindSubmatch(d.header)
+	if len(match) == 0 {
+		return errInvalidHeader
+	}
+	if len(match) != reMatchLength {
+		panic("internal error")
+	}
 
 	edgesStart := reSingleNameEdgesStart
 	hasTwoNames := match[reTwoNames] != nil
@@ -430,14 +440,109 @@ func (d *declaration) parseHeader() error {
 		panic("unreachable")
 	}
 
-	// TODO: check no remaining content in header
-	// TODO: column nullability spec
+	columnOptionsRaw := match[reColumnOptions]
+	if columnOptionsRaw != nil {
+		if err := d.parseColumnOptions(columnOptionsRaw, t); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
+var (
+	errColumnIndexTooLarge = errors.New("column index is too large")
+	errColumnIndexTooSmall = errors.New("column index is too small (less than 1)")
+)
+
+func (d *declaration) parseColumnOptions(columnOptionsRaw []byte, t *tempBuffer) error {
+	// TODO: better error messages
+	// TODO: better parsing than string splitting
+
+	t.split = t.split[:0]
+	t.split = splitByteAppend(columnOptionsRaw, ',', t.split)
+	for _, columnOptionRaw := range t.split {
+		lastLength := len(t.split)
+		t.split = splitByteAppend(columnOptionRaw, ':', t.split)
+		columnOptionPairRaw := t.split[lastLength:]
+		if len(columnOptionPairRaw) != 2 {
+			return errInvalidHeader
+		}
+		specRaw, nullableRaw := columnOptionPairRaw[0], bytes.TrimSpace(columnOptionPairRaw[1])
+		t.split = t.split[:lastLength]
+
+		var nullable bool
+		switch string(nullableRaw) {
+		case "notnull":
+			nullable = false
+		case "null":
+			nullable = true
+		default:
+			return errInvalidHeader
+		}
+
+		t.split = splitByteAppend(specRaw, ':', t.split)
+		specMaybePairRaw := t.split[lastLength:]
+		switch len(specMaybePairRaw) {
+		case 1:
+			indexOrNameRaw := bytes.TrimSpace(specMaybePairRaw[0])
+			index64, err := util.ParseInt64(indexOrNameRaw)
+			if err != nil {
+				if errors.Is(err, util.ErrOverflow) {
+					return errColumnIndexTooLarge
+				}
+				d.columnOptions = append(d.columnOptions, columnOption{
+					index:    0,
+					name:     indexOrNameRaw,
+					nullable: nullable,
+				})
+			} else {
+				index, err := util.SafeConvert[int64, int](index64)
+				if err != nil {
+					return errColumnIndexTooLarge
+				}
+				if index < 1 {
+					return errColumnIndexTooSmall
+				}
+				d.columnOptions = append(d.columnOptions, columnOption{
+					index:    index,
+					nullable: nullable,
+				})
+			}
+		case 2:
+			tableRaw := bytes.TrimSpace(specMaybePairRaw[0])
+			columnRaw := bytes.TrimSpace(specMaybePairRaw[1])
+			d.columnOptions = append(d.columnOptions, columnOption{
+				index:     0,
+				tableName: tableRaw,
+				name:      columnRaw,
+				nullable:  nullable,
+			})
+		default:
+			return errInvalidHeader
+		}
+		t.split = t.split[:lastLength]
+	}
+
+	return nil
+}
+
+func splitByteAppend(s []byte, sep byte, out [][]byte) [][]byte {
+	remainder := s
+	for {
+		i := bytes.IndexByte(remainder, sep)
+		if i < 0 {
+			out = append(out, remainder)
+			return out
+		}
+		out = append(out, remainder[:i])
+		remainder = remainder[i+1:]
+	}
+}
+
 type columnOption struct {
-	index     int // starts at 1, use names if < 0
-	tableName string
-	name      string // column or field name
+	index     int // starts at 1, use names if == 0
+	tableName []byte
+	name      []byte // column or field name
+	nullable  bool
 }
